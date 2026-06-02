@@ -1,0 +1,21 @@
+name = "MadSDP"
+uuid = "78aae540-d7c2-4d23-bca9-db9a3410dc7f"
+authors = ["Benoît Legat <benoit.legat@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+LowRankOpt = "607ca3ad-272e-43c8-bcbe-fc71b56c935c"
+MadNLP = "2621e9c9-9eb4-46b1-8089-e8c72242dfb6"
+NLPModels = "a4795742-8479-5a88-8948-cc11e1c8c1a6"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+
+[compat]
+LinearAlgebra = "1.10"
+LowRankOpt = "0.2"
+MadNLP = "0.9"
+NLPModels = "0.21"
+Printf = "1.10"
+SparseArrays = "1.10"
+julia = "1.10"
