@@ -46,10 +46,7 @@ end
 _inner(m::LRO.BufferedModelForSchur) = m.model
 _inner(m::LRO.Model) = m
 
-function MadSDPSolver(
-    model::LRO.AbstractModel{T};
-    options...,
-) where {T}
+function MadSDPSolver(model::LRO.AbstractModel{T}; options...) where {T}
     opt = MadSDPOptions{T}(; options...)
     if !(model isa LRO.BufferedModelForSchur)
         # Wrap with the Schur buffer so we can call `LRO.schur_complement!`.
@@ -59,24 +56,42 @@ function MadSDPSolver(
     if nblocks == 0
         error("MadSDP: model has no PSD blocks.")
     end
-    blocks = [SDPBlock{T}(LRO.side_dimension(model, LRO.MatrixIndex(i))) for i in 1:nblocks]
+    blocks = [SDPBlock{T}(LRO.side_dimension(model, LRO.MatrixIndex(i))) for i = 1:nblocks]
     m = model.meta.ncon
     n_scalar = LRO.num_scalars(model)
     sys = SchurSystem{T}(m; linear_solver = opt.linear_solver)
     return MadSDPSolver(
-        model, blocks,
-        zeros(T, m), zeros(T, m), zeros(T, m),
+        model,
+        blocks,
+        zeros(T, m),
+        zeros(T, m),
+        zeros(T, m),
         n_scalar,
-        zeros(T, n_scalar), zeros(T, n_scalar),
-        zeros(T, n_scalar), zeros(T, n_scalar),
-        zeros(T, n_scalar), zeros(T, n_scalar),
-        zeros(T, n_scalar), zeros(T, n_scalar),
-        zeros(T, n_scalar), zeros(T, m),
-        sys, opt,
-        m, nblocks,
-        zero(T), zero(T), zero(T), zero(T),
-        zero(T), zero(T), zero(T), zero(T),
-        0, MadNLP.INITIAL, time(),
+        zeros(T, n_scalar),
+        zeros(T, n_scalar),
+        zeros(T, n_scalar),
+        zeros(T, n_scalar),
+        zeros(T, n_scalar),
+        zeros(T, n_scalar),
+        zeros(T, n_scalar),
+        zeros(T, n_scalar),
+        zeros(T, n_scalar),
+        zeros(T, m),
+        sys,
+        opt,
+        m,
+        nblocks,
+        zero(T),
+        zero(T),
+        zero(T),
+        zero(T),
+        zero(T),
+        zero(T),
+        zero(T),
+        zero(T),
+        0,
+        MadNLP.INITIAL,
+        time(),
     )
 end
 
@@ -102,18 +117,21 @@ function initialize!(solver::MadSDPSolver{T}) where {T}
     inner = _inner(model)
     bscale = LinearAlgebra.norm(LRO.cons_constant(model), Inf)
     cscale = zero(T)
-    for i in 1:solver.nblocks
+    for i = 1:(solver.nblocks)
         cscale = max(cscale, LinearAlgebra.norm(LRO.grad(model, LRO.MatrixIndex(i)), Inf))
     end
     if solver.n_scalar > 0
         cscale = max(cscale, LinearAlgebra.norm(inner.d_lin, Inf))
     end
     n_total_dim = total_dim(solver.blocks) + solver.n_scalar
-    β = max(T(10), T(sqrt(max(bscale, one(T)) * max(cscale, one(T)))) * sqrt(T(n_total_dim)))
+    β = max(
+        T(10),
+        T(sqrt(max(bscale, one(T)) * max(cscale, one(T)))) * sqrt(T(n_total_dim)),
+    )
     for b in solver.blocks
         fill!(b.X, zero(T))
         fill!(b.S, zero(T))
-        @inbounds for k in 1:b.n
+        @inbounds for k = 1:(b.n)
             b.X[k, k] = β
             b.S[k, k] = β
         end
@@ -159,7 +177,7 @@ function mpc_step!(solver::MadSDPSolver{T}) where {T}
         return
     end
     if solver.n_scalar > 0
-        @inbounds for k in 1:solver.n_scalar
+        @inbounds for k = 1:(solver.n_scalar)
             zk = solver.z[k]
             solver.Si_lin[k] = one(T) / zk
             solver.W_lin[k] = solver.x[k] / zk
@@ -169,13 +187,15 @@ function mpc_step!(solver::MadSDPSolver{T}) where {T}
     # 2. Build & factorise the Schur matrix.
     reg = opt.regularize_schur
     factorised = false
-    for _ in 1:opt.max_schur_reg
+    for _ = 1:(opt.max_schur_reg)
         try
             build_and_factorize!(solver.sys, solver.model, shaped_W(solver), reg)
             factorised = true
             break
         catch err
-            err isa LinearAlgebra.PosDefException || err isa LinearAlgebra.SingularException || rethrow()
+            err isa LinearAlgebra.PosDefException ||
+                err isa LinearAlgebra.SingularException ||
+                rethrow()
             reg = reg == zero(T) ? T(1e-12) : reg * 10
         end
     end
@@ -215,13 +235,13 @@ function mpc_step!(solver::MadSDPSolver{T}) where {T}
     # 7. Apply step.
     for b in solver.blocks
         @. b.X = b.X + α * b.delX
-        @inbounds for q in 1:b.n, p in 1:(q-1)
+        @inbounds for q = 1:(b.n), p = 1:(q-1)
             v = (b.X[p, q] + b.X[q, p]) / 2
             b.X[p, q] = v
             b.X[q, p] = v
         end
         @. b.S = b.S + β * b.delS
-        @inbounds for q in 1:b.n, p in 1:(q-1)
+        @inbounds for q = 1:(b.n), p = 1:(q-1)
             v = (b.S[p, q] + b.S[q, p]) / 2
             b.S[p, q] = v
             b.S[q, p] = v
@@ -242,8 +262,9 @@ function update_termination!(solver::MadSDPSolver{T}) where {T}
     dobj = dual_objective(solver)
     solver.obj_val = pobj
 
-    solver.inf_pr = LinearAlgebra.norm(solver.Rp, Inf) /
-                    max(T(1), LinearAlgebra.norm(LRO.cons_constant(solver.model), Inf))
+    solver.inf_pr =
+        LinearAlgebra.norm(solver.Rp, Inf) /
+        max(T(1), LinearAlgebra.norm(LRO.cons_constant(solver.model), Inf))
 
     Rd_norm = zero(T)
     for b in solver.blocks
@@ -253,8 +274,9 @@ function update_termination!(solver::MadSDPSolver{T}) where {T}
         Rd_norm = max(Rd_norm, LinearAlgebra.norm(solver.Rd_lin, Inf))
     end
     cnorm = zero(T)
-    for i in 1:solver.nblocks
-        cnorm = max(cnorm, LinearAlgebra.norm(LRO.grad(solver.model, LRO.MatrixIndex(i)), Inf))
+    for i = 1:(solver.nblocks)
+        cnorm =
+            max(cnorm, LinearAlgebra.norm(LRO.grad(solver.model, LRO.MatrixIndex(i)), Inf))
     end
     if solver.n_scalar > 0
         cnorm = max(cnorm, LinearAlgebra.norm(_inner(solver.model).d_lin, Inf))
@@ -274,20 +296,34 @@ function update_termination!(solver::MadSDPSolver{T}) where {T}
 end
 
 function print_header()
-    @printf("%4s %14s %14s %9s %9s %9s %9s %9s\n",
-        "iter", "p_obj", "d_obj", "inf_pr", "inf_du", "gap", "mu", "α/β")
+    @printf(
+        "%4s %14s %14s %9s %9s %9s %9s %9s\n",
+        "iter",
+        "p_obj",
+        "d_obj",
+        "inf_pr",
+        "inf_du",
+        "gap",
+        "mu",
+        "α/β"
+    )
 end
 
 function print_iter(solver::MadSDPSolver)
     if solver.iter % 10 == 0
         print_header()
     end
-    @printf("%4d %14.6e %14.6e %9.2e %9.2e %9.2e %9.2e %4.2f/%4.2f\n",
+    @printf(
+        "%4d %14.6e %14.6e %9.2e %9.2e %9.2e %9.2e %4.2f/%4.2f\n",
         solver.iter,
         primal_objective(solver),
         dual_objective(solver),
-        solver.inf_pr, solver.inf_du, solver.inf_compl,
-        solver.mu, solver.alpha, solver.beta,
+        solver.inf_pr,
+        solver.inf_du,
+        solver.inf_compl,
+        solver.mu,
+        solver.alpha,
+        solver.beta,
     )
 end
 

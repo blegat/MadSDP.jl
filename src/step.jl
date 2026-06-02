@@ -35,7 +35,7 @@ function update_residuals!(solver)
     # Scalar dual residual.
     if solver.n_scalar > 0
         LinearAlgebra.mul!(solver.Rd_lin, inner.C_lin', solver.y)
-        @inbounds for k in 1:solver.n_scalar
+        @inbounds for k = 1:(solver.n_scalar)
             solver.Rd_lin[k] = inner.d_lin[k] - solver.z[k] - solver.Rd_lin[k]
         end
     end
@@ -59,7 +59,11 @@ function _copy_to_dense!(Y::AbstractMatrix{T}, X::AbstractMatrix{T}) where {T}
 end
 
 # In-place  Y .+= α * X  where X may be sparse and Y is dense.
-function _axpy_sparse_dense!(Y::AbstractMatrix{T}, α::T, X::SparseArrays.SparseMatrixCSC{T}) where {T}
+function _axpy_sparse_dense!(
+    Y::AbstractMatrix{T},
+    α::T,
+    X::SparseArrays.SparseMatrixCSC{T},
+) where {T}
     rows = SparseArrays.rowvals(X)
     vals = SparseArrays.nonzeros(X)
     @inbounds for j in axes(X, 2)
@@ -81,7 +85,7 @@ function predictor_rhs!(h::Vector{T}, solver) where {T}
         @. b.buf_n = b.Rd + b.S
         LinearAlgebra.mul!(b.buf_n2, b.W, b.buf_n)
         LinearAlgebra.mul!(b.buf_n, b.buf_n2, b.W)
-        @inbounds for q in 1:b.n, p in 1:(q-1)
+        @inbounds for q = 1:(b.n), p = 1:(q-1)
             v = (b.buf_n[p, q] + b.buf_n[q, p]) / 2
             b.buf_n[p, q] = v
             b.buf_n[q, p] = v
@@ -107,13 +111,13 @@ function corrector_rhs!(h::Vector{T}, solver, σμ::T) where {T}
     for (i, b) in enumerate(solver.blocks)
         LinearAlgebra.mul!(b.buf_n, b.G', b.Rd)
         LinearAlgebra.mul!(b.buf_n2, b.buf_n, b.G)
-        @inbounds for k in 1:b.n
+        @inbounds for k = 1:(b.n)
             b.buf_n2[k, k] += b.D[k] - σμ / b.D[k]
         end
         b.buf_n2 .-= b.RNT
         LinearAlgebra.mul!(b.buf_n, b.G, b.buf_n2)
         LinearAlgebra.mul!(b.buf_n2, b.buf_n, b.G')
-        @inbounds for q in 1:b.n, p in 1:(q-1)
+        @inbounds for q = 1:(b.n), p = 1:(q-1)
             v = (b.buf_n2[p, q] + b.buf_n2[q, p]) / 2
             b.buf_n2[p, q] = v
             b.buf_n2[q, p] = v
@@ -123,10 +127,11 @@ function corrector_rhs!(h::Vector{T}, solver, σμ::T) where {T}
     # Scalar block:
     #   h += C_lin * (W_lin .* R_d_lin + x + (δx .* δz − σμ) ./ z).
     if solver.n_scalar > 0
-        @inbounds for k in 1:solver.n_scalar
-            solver.work_scalar[k] = solver.W_lin[k] * solver.Rd_lin[k] +
-                                    solver.x[k] +
-                                    (solver.delx[k] * solver.delz[k] - σμ) * solver.Si_lin[k]
+        @inbounds for k = 1:(solver.n_scalar)
+            solver.work_scalar[k] =
+                solver.W_lin[k] * solver.Rd_lin[k] +
+                solver.x[k] +
+                (solver.delx[k] * solver.delz[k] - σμ) * solver.Si_lin[k]
         end
         LinearAlgebra.mul!(solver.work_m, inner.C_lin, solver.work_scalar)
         h .+= solver.work_m
@@ -144,7 +149,7 @@ function compute_directions!(solver, dely::Vector{T}, kind::Symbol, σμ::T) whe
         AT_dy = LRO.unsafe_jtprod(model, dely, LRO.MatrixIndex(i))
         copyto!(b.delS, b.Rd)
         _axpy_sparse_dense!(b.delS, -one(T), AT_dy)
-        @inbounds for q in 1:b.n, p in 1:(q-1)
+        @inbounds for q = 1:(b.n), p = 1:(q-1)
             v = (b.delS[p, q] + b.delS[q, p]) / 2
             b.delS[p, q] = v
             b.delS[q, p] = v
@@ -160,7 +165,7 @@ function compute_directions!(solver, dely::Vector{T}, kind::Symbol, σμ::T) whe
         else
             error("unknown kind $kind")
         end
-        @inbounds for q in 1:b.n, p in 1:(q-1)
+        @inbounds for q = 1:(b.n), p = 1:(q-1)
             v = (b.delX[p, q] + b.delX[q, p]) / 2
             b.delX[p, q] = v
             b.delX[q, p] = v
@@ -170,19 +175,18 @@ function compute_directions!(solver, dely::Vector{T}, kind::Symbol, σμ::T) whe
     if solver.n_scalar > 0
         # δz = R_d_lin − C_lin' δy.
         LinearAlgebra.mul!(solver.delz, inner.C_lin', dely)
-        @inbounds for k in 1:solver.n_scalar
+        @inbounds for k = 1:(solver.n_scalar)
             solver.delz[k] = solver.Rd_lin[k] - solver.delz[k]
         end
         if kind === :predict
-            @inbounds for k in 1:solver.n_scalar
+            @inbounds for k = 1:(solver.n_scalar)
                 solver.delx[k] = -solver.x[k] - solver.W_lin[k] * solver.delz[k]
             end
         elseif kind === :correct
-            @inbounds for k in 1:solver.n_scalar
-                solver.delx[k] = σμ * solver.Si_lin[k] -
-                                 solver.x[k] -
-                                 solver.W_lin[k] * solver.delz[k] +
-                                 solver.RNT_lin[k]
+            @inbounds for k = 1:(solver.n_scalar)
+                solver.delx[k] =
+                    σμ * solver.Si_lin[k] - solver.x[k] - solver.W_lin[k] * solver.delz[k] +
+                    solver.RNT_lin[k]
             end
         end
     end
@@ -197,10 +201,10 @@ function fraction_to_boundary(solver, τ::T) where {T}
     for b in solver.blocks
         LinearAlgebra.mul!(b.buf_n, b.Gi, b.delX)
         LinearAlgebra.mul!(b.buf_n2, b.buf_n, b.Gi')
-        @inbounds for q in 1:b.n, p in 1:b.n
+        @inbounds for q = 1:(b.n), p = 1:(b.n)
             b.buf_n2[p, q] *= b.DDsi[p] * b.DDsi[q]
         end
-        @inbounds for q in 1:b.n, p in 1:(q-1)
+        @inbounds for q = 1:(b.n), p = 1:(q-1)
             v = (b.buf_n2[p, q] + b.buf_n2[q, p]) / 2
             b.buf_n2[p, q] = v
             b.buf_n2[q, p] = v
@@ -211,10 +215,10 @@ function fraction_to_boundary(solver, τ::T) where {T}
 
         LinearAlgebra.mul!(b.buf_n, b.G', b.delS)
         LinearAlgebra.mul!(b.buf_n2, b.buf_n, b.G)
-        @inbounds for q in 1:b.n, p in 1:b.n
+        @inbounds for q = 1:(b.n), p = 1:(b.n)
             b.buf_n2[p, q] *= b.DDsi[p] * b.DDsi[q]
         end
-        @inbounds for q in 1:b.n, p in 1:(q-1)
+        @inbounds for q = 1:(b.n), p = 1:(q-1)
             v = (b.buf_n2[p, q] + b.buf_n2[q, p]) / 2
             b.buf_n2[p, q] = v
             b.buf_n2[q, p] = v
@@ -224,7 +228,7 @@ function fraction_to_boundary(solver, τ::T) where {T}
         βmin = min(βmin, βi)
     end
     if solver.n_scalar > 0
-        @inbounds for k in 1:solver.n_scalar
+        @inbounds for k = 1:(solver.n_scalar)
             dx, x = solver.delx[k], solver.x[k]
             if dx < zero(T) && x > zero(T)
                 αmin = min(αmin, -τ * x / dx)
@@ -249,14 +253,14 @@ function update_RNT!(solver)
         LinearAlgebra.mul!(b.buf_n2, b.RNT, b.delX)
         LinearAlgebra.mul!(b.RNT, b.buf_n2, b.Gi')
 
-        @inbounds for q in 1:b.n, p in 1:b.n
+        @inbounds for q = 1:(b.n), p = 1:(b.n)
             num = -(b.buf_n[p, q] + b.RNT[p, q])
             den = b.D[p] + b.D[q]
             b.RNT[p, q] = num / den
         end
     end
     if solver.n_scalar > 0
-        @inbounds for k in 1:solver.n_scalar
+        @inbounds for k = 1:(solver.n_scalar)
             solver.RNT_lin[k] = -solver.delx[k] * solver.delz[k] * solver.Si_lin[k]
         end
     end
@@ -275,7 +279,7 @@ function affine_complementarity(solver, α::T, β::T) where {T}
         n += b.n
     end
     if solver.n_scalar > 0
-        @inbounds for k in 1:solver.n_scalar
+        @inbounds for k = 1:(solver.n_scalar)
             xk = solver.x[k] + α * solver.delx[k]
             zk = solver.z[k] + β * solver.delz[k]
             s += xk * zk

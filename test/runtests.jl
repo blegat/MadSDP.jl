@@ -10,12 +10,16 @@ primal_obj(solver) = MadSDP.primal_objective(solver)
 
 # Build an LRO.Model from a single dense PSD block, given block cost `C` and a
 # list of constraint matrices `Aj` with RHS `b_j`.
-function build_sdp(C::AbstractMatrix{T}, As::Vector{<:AbstractMatrix{T}}, b::Vector{T}) where {T}
+function build_sdp(
+    C::AbstractMatrix{T},
+    As::Vector{<:AbstractMatrix{T}},
+    b::Vector{T},
+) where {T}
     n = LinearAlgebra.checksquare(C)
     m = length(As)
     @assert m == length(b)
     Amat = Matrix{SparseMatrixCSC{T,Int64}}(undef, 1, m)
-    for j in 1:m
+    for j = 1:m
         Amat[1, j] = sparse(As[j])
     end
     d_lin = SparseVector{T,Int64}(0, Int64[], T[])
@@ -24,21 +28,24 @@ function build_sdp(C::AbstractMatrix{T}, As::Vector{<:AbstractMatrix{T}}, b::Vec
 end
 
 # Mixed model with one PSD block + an LP block of size n_scalar.
-function build_mixed(C::AbstractMatrix{T},
-                     As::Vector{<:AbstractMatrix{T}},
-                     d_lin_vec::Vector{T},
-                     C_lin_mat::AbstractMatrix{T},
-                     b::Vector{T}) where {T}
+function build_mixed(
+    C::AbstractMatrix{T},
+    As::Vector{<:AbstractMatrix{T}},
+    d_lin_vec::Vector{T},
+    C_lin_mat::AbstractMatrix{T},
+    b::Vector{T},
+) where {T}
     n = LinearAlgebra.checksquare(C)
     m = length(As)
     @assert m == length(b) == size(C_lin_mat, 1)
     @assert size(C_lin_mat, 2) == length(d_lin_vec)
     Amat = Matrix{SparseMatrixCSC{T,Int64}}(undef, 1, m)
-    for j in 1:m
+    for j = 1:m
         Amat[1, j] = sparse(As[j])
     end
     nz = findall(!iszero, d_lin_vec)
-    d_lin = SparseVector{T,Int64}(length(d_lin_vec), Int64.(nz), T[d_lin_vec[i] for i in nz])
+    d_lin =
+        SparseVector{T,Int64}(length(d_lin_vec), Int64.(nz), T[d_lin_vec[i] for i in nz])
     C_lin = SparseMatrixCSC{T,Int64}(sparse(C_lin_mat))
     return LRO.Model([sparse(C)], Amat, b, d_lin, C_lin, [n])
 end
@@ -58,15 +65,20 @@ end
 
 # Asymmetric 4-node weighted maxcut from the LRO README (known SDP value ≈ 18).
 @testset "maxcut LRO example" begin
-    W = Float64[0 5 7 6;
-                5 0 0 1;
-                7 0 0 1;
-                6 1 1 0]
+    W = Float64[
+        0 5 7 6;
+        5 0 0 1;
+        7 0 0 1;
+        6 1 1 0
+    ]
     D = Diagonal(vec(sum(W, dims = 2)))
     L = Matrix(D - W)
     C = -L / 4
     n = 4
-    As = [Matrix{Float64}([k1 == k && k2 == k ? 1.0 : 0.0 for k1 in 1:n, k2 in 1:n]) for k in 1:n]
+    As = [
+        Matrix{Float64}([k1 == k && k2 == k ? 1.0 : 0.0 for k1 = 1:n, k2 = 1:n]) for
+        k = 1:n
+    ]
     b = ones(n)
     model = build_sdp(C, As, b)
 
@@ -96,8 +108,8 @@ end
 # exercises the C_lin path nontrivially.)
 @testset "mixed LP + 1×1 SDP" begin
     Cmat = reshape([1.0], 1, 1)                  # cost on t : ⟨[1], [t]⟩ = t
-    A1   = reshape([1.0], 1, 1)                  # constraint 1 picks up t
-    A2   = reshape([1.0], 1, 1)                  # constraint 2 picks up t
+    A1 = reshape([1.0], 1, 1)                  # constraint 1 picks up t
+    A2 = reshape([1.0], 1, 1)                  # constraint 2 picks up t
     d_lin = [2.0, 1.0]                           # scalar costs
     C_lin = Float64[1 0; 0 1]                    # constraint 1 ↔ x₁, constraint 2 ↔ x₂
     b = [1.0, 1.0]
@@ -115,15 +127,20 @@ end
 # 4-cycle maxcut SDP : known SDP value = 4.  We minimise ⟨-L/4, X⟩, so the
 # optimal objective is -4.
 @testset "maxcut 4-cycle" begin
-    W = Float64[0 1 0 1;
-                1 0 1 0;
-                0 1 0 1;
-                1 0 1 0]
+    W = Float64[
+        0 1 0 1;
+        1 0 1 0;
+        0 1 0 1;
+        1 0 1 0
+    ]
     D = Diagonal(vec(sum(W, dims = 2)))
     L = Matrix(D - W)
     C = -L / 4
     n = 4
-    As = [Matrix{Float64}([k1 == k && k2 == k ? 1.0 : 0.0 for k1 in 1:n, k2 in 1:n]) for k in 1:n]
+    As = [
+        Matrix{Float64}([k1 == k && k2 == k ? 1.0 : 0.0 for k1 = 1:n, k2 = 1:n]) for
+        k = 1:n
+    ]
     b = ones(n)
     model = build_sdp(C, As, b)
 

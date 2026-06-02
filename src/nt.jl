@@ -12,7 +12,7 @@
 function safe_cholesky!(work::AbstractMatrix{T}, M::AbstractMatrix{T}) where {T}
     copyto!(work, M)
     # Symmetrise to avoid stray asymmetry from rounding.
-    @inbounds for j in axes(work, 2), i in 1:(j-1)
+    @inbounds for j in axes(work, 2), i = 1:(j-1)
         work[i, j] = (work[i, j] + work[j, i]) / 2
         work[j, i] = work[i, j]
     end
@@ -48,7 +48,7 @@ function prepare_W_block!(b::SDPBlock{T}) where {T}
     LinearAlgebra.mul!(b.Gi, Dsqrt * V', LxInv)
     LinearAlgebra.mul!(b.W, b.G, b.G')
     # Symmetrise.
-    @inbounds for j in 1:b.n, i in 1:(j-1)
+    @inbounds for j = 1:(b.n), i = 1:(j-1)
         b.W[i, j] = (b.W[i, j] + b.W[j, i]) / 2
         b.W[j, i] = b.W[i, j]
     end
@@ -62,7 +62,7 @@ function prepare_W_block!(b::SDPBlock{T}) where {T}
     # exactly D[k] when (X,S) lie on the central path; off-path this gives a
     # well-defined symmetric scaling for the step-length test.
     GtSG = b.G' * b.S * b.G
-    @inbounds for k in 1:b.n
+    @inbounds for k = 1:(b.n)
         d = GtSG[k, k]
         b.DDsi[k] = d > zero(T) ? one(T) / sqrt(d) : one(T)
     end
@@ -78,7 +78,12 @@ end
 
 # my_kron(A, B, C) = B * C * A'.  Loraine names it `my_kron` because
 # (A ⊗ B) vec(C) = vec(B C A')  in column-major vec.
-function my_kron!(out::AbstractMatrix{T}, A::AbstractMatrix{T}, B::AbstractMatrix{T}, C::AbstractMatrix{T}) where {T}
+function my_kron!(
+    out::AbstractMatrix{T},
+    A::AbstractMatrix{T},
+    B::AbstractMatrix{T},
+    C::AbstractMatrix{T},
+) where {T}
     BC = B * C
     LinearAlgebra.mul!(out, BC, A')
     return out

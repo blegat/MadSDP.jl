@@ -35,7 +35,7 @@ function build_and_factorize!(sys::SchurSystem{T}, model, W, reg::T) where {T}
     sys.reg = reg
     LRO.schur_complement!(model, W, sys.H)
     if reg > zero(T)
-        @inbounds for i in 1:sys.m
+        @inbounds for i = 1:(sys.m)
             sys.H[i, i] += reg
         end
     end
