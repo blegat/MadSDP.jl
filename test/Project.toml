@@ -3,6 +3,10 @@ LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 LowRankOpt = "607ca3ad-272e-43c8-bcbe-fc71b56c935c"
 MadNLP = "2621e9c9-9eb4-46b1-8089-e8c72242dfb6"
 MadSDP = "78aae540-d7c2-4d23-bca9-db9a3410dc7f"
+MathOptInterface = "b8f27783-ece8-5eb3-8dc8-9495eed66fee"
 NLPModels = "a4795742-8479-5a88-8948-cc11e1c8c1a6"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+MadSDP = {path = ".."}
