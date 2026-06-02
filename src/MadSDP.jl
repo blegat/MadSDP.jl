@@ -5,8 +5,7 @@ using LinearAlgebra
 import SparseArrays
 import MadNLP
 import NLPModels
-import LowRankOpt
-const LRO = LowRankOpt
+import LowRankOpt as LRO
 
 export MadSDPSolver, MadSDPOptions, madsdp, solve!
 
