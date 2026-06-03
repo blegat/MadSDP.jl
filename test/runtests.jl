@@ -149,3 +149,7 @@ end
     @test solver.status == MadNLP.SOLVE_SUCCEEDED
     @test isapprox(primal_obj(solver), -4.0; atol = 1e-4)
 end
+
+@testset "MOI_wrapper" begin
+    include("MOI_wrapper.jl")
+end

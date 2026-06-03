@@ -15,5 +15,6 @@ include("nt.jl")
 include("kkt.jl")
 include("step.jl")
 include("solver.jl")
+include("moi.jl")
 
 end # module
