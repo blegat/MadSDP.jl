@@ -148,6 +148,10 @@ end
     @test isapprox(primal_obj(solver), -4.0; atol = 1e-4)
 end
 
+@testset "dual_solver" begin
+    include("dual_runtests.jl")
+end
+
 @testset "MOI_wrapper" begin
     include("MOI_wrapper.jl")
 end
