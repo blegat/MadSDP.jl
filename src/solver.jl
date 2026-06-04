@@ -53,12 +53,12 @@ function MadSDPSolver(model::LRO.AbstractModel{T}; options...) where {T}
         model = LRO.BufferedModelForSchur(model, opt.regularize_schur)
     end
     nblocks = LRO.num_matrices(model)
-    if nblocks == 0
-        error("MadSDP: model has no PSD blocks.")
+    n_scalar = LRO.num_scalars(model)
+    if nblocks == 0 && n_scalar == 0
+        error("MadSDP: model has no variables.")
     end
     blocks = [SDPBlock{T}(LRO.side_dimension(model, LRO.MatrixIndex(i))) for i = 1:nblocks]
     m = model.meta.ncon
-    n_scalar = LRO.num_scalars(model)
     sys = SchurSystem{T}(m; linear_solver = opt.linear_solver)
     return MadSDPSolver(
         model,
