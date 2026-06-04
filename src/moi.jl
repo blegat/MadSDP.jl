@@ -14,15 +14,15 @@ import SolverCore
 import MathOptInterface as MOI
 
 const MOI_STATUS = Dict(
-    MadNLP.SOLVE_SUCCEEDED               => :first_order,
-    MadNLP.SOLVED_TO_ACCEPTABLE_LEVEL    => :acceptable,
-    MadNLP.MAXIMUM_ITERATIONS_EXCEEDED   => :max_iter,
-    MadNLP.MAXIMUM_WALLTIME_EXCEEDED     => :max_time,
-    MadNLP.INFEASIBLE_PROBLEM_DETECTED   => :infeasible,
-    MadNLP.ERROR_IN_STEP_COMPUTATION     => :exception,
-    MadNLP.USER_REQUESTED_STOP           => :user,
-    MadNLP.INITIAL                       => :unknown,
-    MadNLP.REGULAR                       => :unknown,
+    MadNLP.SOLVE_SUCCEEDED => :first_order,
+    MadNLP.SOLVED_TO_ACCEPTABLE_LEVEL => :acceptable,
+    MadNLP.MAXIMUM_ITERATIONS_EXCEEDED => :max_iter,
+    MadNLP.MAXIMUM_WALLTIME_EXCEEDED => :max_time,
+    MadNLP.INFEASIBLE_PROBLEM_DETECTED => :infeasible,
+    MadNLP.ERROR_IN_STEP_COMPUTATION => :exception,
+    MadNLP.USER_REQUESTED_STOP => :user,
+    MadNLP.INITIAL => :unknown,
+    MadNLP.REGULAR => :unknown,
 )
 
 _solvercore_status(s::MadNLP.Status) = get(MOI_STATUS, s, :unknown)

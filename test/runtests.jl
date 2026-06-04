@@ -76,8 +76,7 @@ end
     C = -L / 4
     n = 4
     As = [
-        Matrix{Float64}([k1 == k && k2 == k ? 1.0 : 0.0 for k1 = 1:n, k2 = 1:n]) for
-        k = 1:n
+        Matrix{Float64}([k1 == k && k2 == k ? 1.0 : 0.0 for k1 = 1:n, k2 = 1:n]) for k = 1:n
     ]
     b = ones(n)
     model = build_sdp(C, As, b)
@@ -138,8 +137,7 @@ end
     C = -L / 4
     n = 4
     As = [
-        Matrix{Float64}([k1 == k && k2 == k ? 1.0 : 0.0 for k1 = 1:n, k2 = 1:n]) for
-        k = 1:n
+        Matrix{Float64}([k1 == k && k2 == k ? 1.0 : 0.0 for k1 = 1:n, k2 = 1:n]) for k = 1:n
     ]
     b = ones(n)
     model = build_sdp(C, As, b)
