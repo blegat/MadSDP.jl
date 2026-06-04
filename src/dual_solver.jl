@@ -105,13 +105,12 @@ function MadDualSDPSolver(model::LRO.AbstractModel{T}; options...) where {T}
         model = LRO.BufferedModelForSchur(model, opt.regularize_schur)
     end
     if LRO.num_scalars(model) > 0
-        error(
-            "MadDualSDPSolver: scalar/LP block not supported yet (use MadSDPSolver).",
-        )
+        error("MadDualSDPSolver: scalar/LP block not supported yet (use MadSDPSolver).")
     end
     nblocks = LRO.num_matrices(model)
     nblocks == 0 && error("MadDualSDPSolver: model has no matrix variables.")
-    blocks = [DualSDPBlock{T}(LRO.side_dimension(model, LRO.MatrixIndex(i))) for i = 1:nblocks]
+    blocks =
+        [DualSDPBlock{T}(LRO.side_dimension(model, LRO.MatrixIndex(i))) for i = 1:nblocks]
     m = model.meta.ncon
     sys = SchurSystem{T}(m; linear_solver = opt.linear_solver)
     ν = sum(b -> b.n, blocks)
@@ -221,8 +220,10 @@ function _factorize_hessian!(solver::MadDualSDPSolver{T}) where {T}
             factorised = true
             break
         catch err
-            (err isa LinearAlgebra.PosDefException || err isa LinearAlgebra.SingularException) ||
-                rethrow()
+            (
+                err isa LinearAlgebra.PosDefException ||
+                err isa LinearAlgebra.SingularException
+            ) || rethrow()
             reg = reg == zero(T) ? T(1e-12) : reg * 10
         end
     end
@@ -350,8 +351,9 @@ end
 
 function _find_initial_y!(solver::MadDualSDPSolver{T}) where {T}
     if solver.opt.initial_y !== nothing
-        length(solver.opt.initial_y) == solver.m ||
-            error("initial_y has length $(length(solver.opt.initial_y)), expected $(solver.m).")
+        length(solver.opt.initial_y) == solver.m || error(
+            "initial_y has length $(length(solver.opt.initial_y)), expected $(solver.m).",
+        )
         copyto!(solver.y, solver.opt.initial_y)
         _refresh_slacks!(solver) ||
             error("MadDualSDPSolver: provided initial_y does not give S ≻ 0.")
@@ -389,8 +391,7 @@ function initialize!(solver::MadDualSDPSolver{T}) where {T}
     # First, factor ∇²ζ at y₀ and compute the gradient.
     solver.t = zero(T)
     _compute_gradient!(solver)
-    _factorize_hessian!(solver) ||
-        error("MadDualSDPSolver: failed to factorize ∇²ζ at y₀.")
+    _factorize_hessian!(solver) || error("MadDualSDPSolver: failed to factorize ∇²ζ at y₀.")
     # d_ζ = B · ∇ζ.
     copyto!(solver.d, solver.grad_zeta)
     solve_inplace!(solver.sys, solver.d)
