@@ -16,7 +16,7 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 [compat]
 LinearAlgebra = "1.10"
 LowRankOpt = "0.2"
-MadNLP = "0.9"
+MadNLP = "0.10"
 MathOptInterface = "1.40"
 NLPModels = "0.21"
 Printf = "1.10"
