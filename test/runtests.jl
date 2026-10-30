@@ -148,6 +148,77 @@ end
     @test isapprox(primal_obj(solver), -4.0; atol = 1e-4)
 end
 
+# Every combination of the components on the problems above.
+@testset "components" begin
+    W = Float64[
+        0 5 7 6;
+        5 0 0 1;
+        7 0 0 1;
+        6 1 1 0
+    ]
+    L = Matrix(Diagonal(vec(sum(W, dims = 2))) - W)
+    As = [Matrix{Float64}([k1 == k == k2 for k1 = 1:4, k2 = 1:4]) for k = 1:4]
+    maxcut = build_sdp(-L / 4, As, ones(4))
+    mixed = build_mixed(
+        reshape([1.0], 1, 1),
+        [reshape([1.0], 1, 1), reshape([1.0], 1, 1)],
+        [2.0, 1.0],
+        Float64[1 0; 0 1],
+        [1.0, 1.0],
+    )
+    @testset "$direction $step $centering" for direction in (NT(), HKM()),
+        step in (EigenStep(), CholeskyBacktrack()),
+        centering in (Mehrotra(), AdaptiveMu())
+
+        for (model, expected) in ((maxcut, -18.0), (mixed, 1.0))
+            solver = MadSDPSolver(model; direction, step, centering, max_iter = 100)
+            solve!(solver; verbose = false)
+            @test solver.status == MadNLP.SOLVE_SUCCEEDED
+            @test isapprox(primal_obj(solver), expected; atol = 1e-4)
+        end
+    end
+    # Dual feasible start of `mc_psd` for `min ⟨-L / 4, X⟩, diag(X) = 1`.
+    initial_point =
+        InitialPoint([Matrix(1.0I, 4, 4)], -(1 .+ vec(sum(abs, L / 4, dims = 1))))
+    @testset "$schur" for schur in (DenseCholesky(), MadNLPSchur())
+        solver = MadSDPSolver(
+            maxcut;
+            direction = HKM(),
+            step = CholeskyBacktrack(),
+            centering = AdaptiveMu(),
+            initial_point,
+            schur,
+        )
+        solve!(solver; verbose = false)
+        @test solver.status == MadNLP.SOLVE_SUCCEEDED
+        @test isapprox(primal_obj(solver), -18.0; atol = 1e-4)
+        # The dual iterates stay feasible.
+        @test solver.inf_du < 1e-12
+    end
+    @testset "InitialPoint with scalars" begin
+        solver = MadSDPSolver(
+            mixed;
+            direction = HKM(),
+            initial_point = InitialPoint([ones(1, 1)], [-1.0, -1.0]; x = [0.5, 0.5]),
+        )
+        solve!(solver; verbose = false)
+        @test solver.status == MadNLP.SOLVE_SUCCEEDED
+        @test isapprox(primal_obj(solver), 1.0; atol = 1e-5)
+    end
+    @testset "no allocation per iteration" begin
+        solver = MadSDPSolver(
+            maxcut;
+            direction = HKM(),
+            step = CholeskyBacktrack(),
+            centering = AdaptiveMu(),
+            initial_point,
+        )
+        MadSDP.initialize!(solver)
+        MadSDP.iterate!(solver, solver.centering)
+        @test @allocated(MadSDP.iterate!(solver, solver.centering)) < 1000
+    end
+end
+
 @testset "dual_solver" begin
     include("dual_runtests.jl")
 end
