@@ -4,6 +4,30 @@ using Test
 import MathOptInterface as MOI
 import MadSDP
 
+# The components are chosen with raw attributes, e.g., from JuMP with
+# `set_attribute(model, "direction", MadSDP.HKM())`.
+function test_components()
+    model = MOI.instantiate(MadSDP.Optimizer; with_bridge_type = Float64)
+    MOI.set(model, MOI.Silent(), true)
+    MOI.set(model, MOI.RawOptimizerAttribute("direction"), MadSDP.HKM())
+    MOI.set(model, MOI.RawOptimizerAttribute("step"), MadSDP.CholeskyBacktrack())
+    config = MOI.Test.Config(
+        atol = 1e-3,
+        rtol = 1e-3,
+        exclude = Any[
+            MOI.ConstraintBasisStatus,
+            MOI.VariableBasisStatus,
+            MOI.ObjectiveBound,
+        ],
+    )
+    MOI.Test.runtests(
+        model,
+        config;
+        include = ["test_conic_PositiveSemidefiniteConeTriangle"],
+    )
+    return
+end
+
 function test_runtests()
     model = MOI.instantiate(MadSDP.Optimizer; with_bridge_type = Float64)
     # `ZerosBridge` strips the dual of variable bounds; remove it so that

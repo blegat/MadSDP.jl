@@ -33,24 +33,29 @@ _solvercore_status(s::MadNLP.Status) = get(MOI_STATUS, s, :unknown)
 Thin `SolverCore.AbstractOptimizationSolver` wrapper around `MadSDPSolver` so
 that `LowRankOpt.Optimizer` can drive the IPM and expose the result through
 MathOptInterface.
+
+`LowRankOpt.Optimizer` only gives its solver options to `SolverCore.solve!`
+so the `MadSDPSolver` is created there. This allows to choose the components
+from JuMP, e.g., with `set_attribute(model, "direction", MadSDP.HKM())`.
 """
-struct Solver{T,IS} <: SolverCore.AbstractOptimizationSolver
-    inner::IS
+mutable struct Solver{T,M} <: SolverCore.AbstractOptimizationSolver
+    model::M
+    inner::Any
     stats::SolverCore.GenericExecutionStats{T,Vector{T},Vector{T},Any}
 end
 
 function Solver(model::LRO.AbstractModel{T}; kws...) where {T}
-    inner = MadSDPSolver(model; kws...)
     stats = SolverCore.GenericExecutionStats(model)
-    return Solver{T,typeof(inner)}(inner, stats)
+    return Solver{T,typeof(model)}(model, nothing, stats)
 end
 
 function SolverCore.solve!(
     s::Solver{T},
-    ::NLPModels.AbstractNLPModel;   # the LRO model — already cached in `s.inner.model`
+    ::NLPModels.AbstractNLPModel;   # the LRO model — already cached in `s.model`
     verbose::Int = 1,
     kws...,
 ) where {T}
+    s.inner = MadSDPSolver(s.model; kws...)
     solve!(s.inner; verbose = verbose > 0)
     # Populate the stats fields LRO.Optimizer reads from.
     stats = s.stats
