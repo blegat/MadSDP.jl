@@ -209,7 +209,7 @@ end
     # boxing of the global variables.
     function iteration_allocations(solver)
         return @allocated begin
-            MadSDP.iterate!(solver, solver.centering)
+            MadSDP.iterate!(solver)
             MadSDP.update_termination!(solver)
         end
     end
@@ -228,10 +228,22 @@ end
                 @test iteration_allocations(solver) == 0
             end
         end
+        @testset "$schur DualCentering" for schur in (DenseCholesky(), MadNLPSchur())
+            solver = MadSDPSolver(maxcut; algorithm = DualCentering(), schur)
+            MadSDP.initialize!(solver)
+            # Both the damped Newton steps and the predictor steps.
+            for _ = 1:6
+                iteration_allocations(solver)
+                @test solver.status == MadNLP.REGULAR
+                @test iteration_allocations(solver) == 0
+            end
+            @test solver.state.n_newton > 0
+            @test solver.state.n_predictor > 0
+        end
     end
 end
 
-@testset "dual_solver" begin
+@testset "DualCentering" begin
     include("dual_runtests.jl")
 end
 

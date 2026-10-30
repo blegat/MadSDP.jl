@@ -8,9 +8,9 @@ import NLPModels
 import LowRankOpt as LRO
 
 export MadSDPSolver, MadSDPOptions, madsdp, solve!
-export MadDualSDPSolver, MadDualSDPOptions, madsdp_dual
+export PrimalDual, DualCentering
 export NT, HKM, EigenStep, CholeskyBacktrack, Mehrotra, AdaptiveMu
-export ScaledIdentity, InitialPoint, DenseCholesky, MadNLPSchur
+export ScaledIdentity, InitialPoint, DualShift, DenseCholesky, MadNLPSchur
 
 include("options.jl")
 include("kkt.jl")
@@ -20,7 +20,8 @@ include("directions.jl")
 include("schur_solvers.jl")
 include("step.jl")
 include("solver.jl")
-include("dual_solver.jl")
+include("primal_dual.jl")
+include("dual_centering.jl")
 include("moi.jl")
 
 end # module

@@ -1,39 +1,25 @@
-# Per-PSD-block state of the primal-dual interior-point method.
+# Per-PSD-block state of the interior-point methods.
 #
 # For block `i` of side dimension `n`:
 #   X, S         primal and dual PSD matrices, central path: X S = μ I
-#   delX, delS   search directions
 #   Rd           dual residual  C - S - A*(y)
 #   Ls           Cholesky factor of S (lower triangle)
 #   Si           S⁻¹
-#   Lx           Cholesky factor of X, only computed if the step length
-#                strategy needs it
-#   corr         second-order correction added to ΔX
 #   buf, buf2    scratch matrices
-#   dir          workspace of the search direction
-#   step         workspace of the step length strategy
-struct SDPBlock{T,DW,SW}
+#   work         workspace of the algorithm, see `block_workspace`
+struct SDPBlock{T,W}
     n::Int
     X::Matrix{T}
     S::Matrix{T}
-    delX::Matrix{T}
-    delS::Matrix{T}
     Rd::Matrix{T}
     Ls::Matrix{T}
     Si::Matrix{T}
-    Lx::Matrix{T}
-    corr::Matrix{T}
     buf::Matrix{T}
     buf2::Matrix{T}
-    dir::DW
-    step::SW
+    work::W
 end
 
-function SDPBlock{T}(
-    direction::AbstractDirection,
-    step::AbstractStepLength,
-    n::Integer,
-) where {T}
+function SDPBlock{T}(algorithm::AbstractAlgorithm, n::Integer) where {T}
     mat() = zeros(T, n, n)
     return SDPBlock(
         Int(n),
@@ -44,12 +30,35 @@ function SDPBlock{T}(
         mat(),
         mat(),
         mat(),
+        block_workspace(algorithm, T, n),
+    )
+end
+
+# Workspace of `PrimalDual` for one block:
+#   delX, delS   search directions
+#   Lx           Cholesky factor of X, only computed if the step length
+#                strategy needs it
+#   corr         second-order correction added to ΔX
+#   dir          workspace of the search direction
+#   step         workspace of the step length strategy
+struct PrimalDualBlock{T,DW,SW}
+    delX::Matrix{T}
+    delS::Matrix{T}
+    Lx::Matrix{T}
+    corr::Matrix{T}
+    dir::DW
+    step::SW
+end
+
+function block_workspace(a::PrimalDual, ::Type{T}, n) where {T}
+    mat() = zeros(T, n, n)
+    return PrimalDualBlock(
         mat(),
         mat(),
         mat(),
         mat(),
-        direction_workspace(direction, T, n),
-        step_workspace(step, T, n),
+        direction_workspace(a.direction, T, n),
+        step_workspace(a.step, T, n),
     )
 end
 

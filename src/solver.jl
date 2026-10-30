@@ -1,14 +1,13 @@
-# MadSDP primal-dual interior-point driver, modelled on MadIPM's `MPCSolver`.
+# MadSDP interior-point driver, modelled on MadIPM's `MPCSolver`.
 # We do NOT subtype `MadNLP.AbstractMadNLPSolver`: the solver state is
 # matrix-block-valued and doesn't naturally fit MadNLP's scalar
 # `PrimalVector`. The algorithm is assembled from the components of
-# `components.jl`.
+# `components.jl`; this file contains what all algorithms share.
 
-mutable struct MadSDPSolver{T,M,B<:SDPBlock{T},D,SL,C,I,SW}
+mutable struct MadSDPSolver{T,M,B<:SDPBlock{T},A<:AbstractAlgorithm,AS,I,SW}
     model::M                            # LRO.BufferedModelForSchur
-    direction::D
-    step::SL
-    centering::C
+    algorithm::A
+    state::AS                           # see `algorithm_state`
     initial_point::I
     schur::SW                           # workspace of the Schur solver
     blocks::Vector{B}
@@ -56,17 +55,20 @@ _inner(m::LRO.Model) = m
 """
     MadSDPSolver(
         model::LRO.AbstractModel;
+        algorithm::AbstractAlgorithm = PrimalDual(direction, step, centering),
         direction::AbstractDirection = NT(),
         step::AbstractStepLength = EigenStep(),
         centering::AbstractCentering = Mehrotra(),
-        initial_point::AbstractInitialPoint = ScaledIdentity(),
+        initial_point::AbstractInitialPoint = default_initial_point(algorithm),
         schur::AbstractSchurSolver = DenseCholesky(),
         options...,
     )
 
-Primal-dual interior-point solver for the problem encoded in `model`,
-assembled from the given components. The remaining keyword arguments are
-the fields of [`MadSDPOptions`](@ref).
+Interior-point solver for the problem encoded in `model`, assembled from
+the given components. The keyword arguments `direction`, `step` and
+`centering` configure the default [`PrimalDual`](@ref) algorithm and are
+ignored if `algorithm` is given. The remaining keyword arguments are the
+fields of [`MadSDPOptions`](@ref).
 
 For instance, the algorithm of `mc_psd` [HRVW96] for the max-cut
 relaxation is
@@ -79,13 +81,16 @@ MadSDPSolver(
     initial_point = InitialPoint([I(n)], -(1 .+ vec(sum(abs, L, dims = 1)))),
 )
 ```
+and the dual method of [Nes25] is `MadSDPSolver(model; algorithm =
+DualCentering())`.
 """
 function MadSDPSolver(
     model::LRO.AbstractModel{T};
     direction::AbstractDirection = NT(),
     step::AbstractStepLength = EigenStep(),
     centering::AbstractCentering = Mehrotra(),
-    initial_point::AbstractInitialPoint = ScaledIdentity(),
+    algorithm::AbstractAlgorithm = PrimalDual(direction, step, centering),
+    initial_point::AbstractInitialPoint = default_initial_point(algorithm),
     schur::AbstractSchurSolver = DenseCholesky(),
     options...,
 ) where {T}
@@ -98,24 +103,24 @@ function MadSDPSolver(
     if nblocks == 0 && n_scalar == 0
         error("MadSDP: model has no variables.")
     end
-    B = typeof(SDPBlock{T}(direction, step, 1))
+    check_model(algorithm, model)
+    B = typeof(SDPBlock{T}(algorithm, 1))
     blocks = B[
-        SDPBlock{T}(direction, step, LRO.side_dimension(model, LRO.MatrixIndex(i))) for
+        SDPBlock{T}(algorithm, LRO.side_dimension(model, LRO.MatrixIndex(i))) for
         i = 1:nblocks
     ]
     m = model.meta.ncon
     vec_m() = zeros(T, m)
     vec_s() = zeros(T, n_scalar)
     x, zinv = vec_s(), vec_s()
-    L = LRO.ShapedSolution(x, [schur_scaling(b.dir, b)[1] for b in blocks])
-    R = LRO.ShapedSolution(zinv, [schur_scaling(b.dir, b)[2] for b in blocks])
+    L = LRO.ShapedSolution(x, [schur_scaling(algorithm, b)[1] for b in blocks])
+    R = LRO.ShapedSolution(zinv, [schur_scaling(algorithm, b)[2] for b in blocks])
     cnorm =
         T[LinearAlgebra.norm(LRO.grad(model, LRO.MatrixIndex(i)), Inf) for i = 1:nblocks]
     return MadSDPSolver(
         model,
-        direction,
-        step,
-        centering,
+        algorithm,
+        algorithm_state(algorithm, T, m),
         initial_point,
         schur_workspace(schur, T, m),
         blocks,
@@ -153,6 +158,8 @@ function MadSDPSolver(
     )
 end
 
+check_model(::AbstractAlgorithm, _) = nothing
+
 # Primal objective ⟨C, X⟩ summed over blocks + d_lin' x.
 function primal_objective(solver::MadSDPSolver{T}) where {T}
     s = zero(T)
@@ -181,6 +188,27 @@ function total_complementarity(solver::MadSDPSolver{T}) where {T}
     return s
 end
 
+# `out = C_i - A*_i(y)`
+function _slack!(out::Matrix{T}, model, y::Vector{T}, i::Integer) where {T}
+    _copy_to_dense!(out, LRO.grad(model, LRO.MatrixIndex(i)))
+    AT_y = LRO.unsafe_jtprod(model, y, LRO.MatrixIndex(i))
+    _axpy_sparse_dense!(out, -one(T), AT_y)
+    return _symmetrize!(out)
+end
+
+# Sets the dual slacks `S = C - A*(y)` and `z = d - C_lin' y`.
+function _set_dual_slacks!(solver::MadSDPSolver)
+    for (i, b) in enumerate(solver.blocks)
+        _slack!(b.S, solver.model, solver.y, i)
+    end
+    if solver.n_scalar > 0
+        inner = _inner(solver.model)
+        LinearAlgebra.mul!(solver.z, inner.C_lin', solver.y)
+        solver.z .= inner.d_lin .- solver.z
+    end
+    return
+end
+
 # Initial point : X = S = β I per block,  y = 0,  x = z = β ones.
 function initial_point!(solver::MadSDPSolver{T}, ::ScaledIdentity) where {T}
     model = solver.model
@@ -205,37 +233,49 @@ function initial_point!(solver::MadSDPSolver{T}, ::ScaledIdentity) where {T}
 end
 
 function initial_point!(solver::MadSDPSolver{T}, p::InitialPoint) where {T}
-    model = solver.model
     copyto!(solver.y, p.y)
     for (i, b) in enumerate(solver.blocks)
         copyto!(b.X, p.X[i])
-        # S = C - A*(y)
-        _copy_to_dense!(b.S, LRO.grad(model, LRO.MatrixIndex(i)))
-        AT_y = LRO.unsafe_jtprod(model, solver.y, LRO.MatrixIndex(i))
-        _axpy_sparse_dense!(b.S, -one(T), AT_y)
     end
-    if solver.n_scalar > 0
-        inner = _inner(model)
-        if isnothing(p.x)
-            fill!(solver.x, one(T))
-        else
-            copyto!(solver.x, p.x)
+    if isnothing(p.x)
+        fill!(solver.x, one(T))
+    else
+        copyto!(solver.x, p.x)
+    end
+    _set_dual_slacks!(solver)
+    return
+end
+
+# Whether the dual slacks are strictly feasible, also factorizing them.
+function _dual_interior(solver::MadSDPSolver{T}) where {T}
+    all(b -> _cholesky_factor!(b.Ls, b.S), solver.blocks) || return false
+    return all(>(zero(T)), solver.z)
+end
+
+function initial_point!(solver::MadSDPSolver{T}, p::DualShift) where {T}
+    for b in solver.blocks
+        copyto!(b.X, LinearAlgebra.I)
+    end
+    fill!(solver.x, one(T))
+    ρ = zero(T)
+    while ρ <= p.max_shift
+        fill!(solver.y, -ρ)
+        _set_dual_slacks!(solver)
+        if _dual_interior(solver)
+            # The first `ρ > 0` for which the Cholesky factorization succeeds
+            # may give a numerically singular `S`, so we double it once more.
+            if !iszero(ρ)
+                fill!(solver.y, -2ρ)
+                _set_dual_slacks!(solver)
+            end
+            return
         end
-        LinearAlgebra.mul!(solver.z, inner.C_lin', solver.y)
-        solver.z .= inner.d_lin .- solver.z
+        ρ = iszero(ρ) ? T(p.initial_shift) : 2ρ
     end
-    return
-end
-
-function initialize_centering!(solver, ::Mehrotra)
-    solver.mu = total_complementarity(solver) / max(_barrier_dim(solver), 1)
-    return
-end
-
-function initialize_centering!(solver, c::AdaptiveMu)
-    solver.mu =
-        c.initial_ratio * total_complementarity(solver) / max(_barrier_dim(solver), 1)
-    return
+    error(
+        "MadSDP: could not find a dual interior point `y = -ρ 1` with ρ ≤ $(p.max_shift); " *
+        "use `InitialPoint` to give one.",
+    )
 end
 
 function initialize!(solver::MadSDPSolver)
@@ -243,21 +283,8 @@ function initialize!(solver::MadSDPSolver)
     solver.iter = 0
     solver.status = MadNLP.REGULAR
     solver.start_time = time()
-    update_residuals!(solver)
-    initialize_centering!(solver, solver.centering)
+    initialize_algorithm!(solver, solver.algorithm)
     return
-end
-
-# Computes everything that depends only on the current iterate: the
-# factorizations of the blocks and the scalings of the Schur complement.
-function _prepare!(solver::MadSDPSolver{T}) where {T}
-    for b in solver.blocks
-        prepare_block!(b) || return false
-        prepare_direction!(b.dir, b) || return false
-        prepare_step!(solver.step, b) || return false
-    end
-    solver.zinv .= inv.(solver.z)
-    return true
 end
 
 function _factorize_schur!(solver::MadSDPSolver{T}) where {T}
@@ -277,84 +304,10 @@ function _factorize_schur!(solver::MadSDPSolver{T}) where {T}
     return false
 end
 
-# Solves the Schur system targeting `μ S⁻¹` and computes the directions.
-function _solve_directions!(solver::MadSDPSolver{T}, μ::T, corrected::Bool) where {T}
-    rhs!(solver.dely, solver, μ, corrected)
-    schur_solve!(solver.schur, solver.dely)
-    directions!(solver, solver.dely, μ, corrected)
-    return
-end
+iterate!(solver::MadSDPSolver) = iterate!(solver, solver.algorithm)
 
-function _take_step!(solver::MadSDPSolver{T}, α::T, β::T) where {T}
-    solver.alpha, solver.beta = α, β
-    for b in solver.blocks
-        @. b.X += α * b.delX
-        _symmetrize!(b.X)
-        @. b.S += β * b.delS
-        _symmetrize!(b.S)
-    end
-    @. solver.y += β * solver.dely
-    if solver.n_scalar > 0
-        @. solver.x += α * solver.delx
-        @. solver.z += β * solver.delz
-    end
-    solver.iter += 1
-    update_residuals!(solver)
-    return
-end
-
-function _start_iteration!(solver)
-    if !_prepare!(solver) || !_factorize_schur!(solver)
-        solver.status = MadNLP.ERROR_IN_STEP_COMPUTATION
-        return false
-    end
-    return true
-end
-
-# One Mehrotra predictor-corrector iteration.
-function iterate!(solver::MadSDPSolver{T}, c::Mehrotra) where {T}
-    _start_iteration!(solver) || return
-    μ = total_complementarity(solver) / max(_barrier_dim(solver), 1)
-    solver.mu = μ
-    # Predictor
-    _solve_directions!(solver, zero(T), false)
-    α_aff, β_aff = step_lengths(solver.step, solver)
-    μ_aff = affine_complementarity(solver, α_aff, β_aff)
-    σ = clamp((μ_aff / max(μ, eps(T)))^T(c.σ_exponent), T(1e-8), one(T))
-    solver.sigma = σ
-    correction!(solver)
-    # Corrector
-    _solve_directions!(solver, σ * μ, true)
-    α, β = step_lengths(solver.step, solver)
-    _take_step!(solver, α, β)
-    return
-end
-
-# One iteration of `mc_psd` [HRVW96].
-function iterate!(solver::MadSDPSolver{T}, c::AdaptiveMu) where {T}
-    _start_iteration!(solver) || return
-    _solve_directions!(solver, solver.mu, false)
-    α, β = step_lengths(solver.step, solver)
-    _take_step!(solver, α, β)
-    μ = c.ratio * total_complementarity(solver) / max(_barrier_dim(solver), 1)
-    if min(α, β) < T(0.5)
-        μ *= T(1.5)
-    end
-    if α + β > T(1.6)
-        μ *= T(0.75)
-    end
-    if α + β > T(1.9)
-        μ /= 1 + T(0.1) * solver.iter
-    end
-    solver.mu = μ
-    return
-end
-
-function update_termination!(solver::MadSDPSolver{T}) where {T}
-    opt = solver.opt
-    pobj = primal_objective(solver)
-    dobj = dual_objective(solver)
-    solver.obj_val = pobj
+# Relative primal and dual infeasibilities from `Rp`, `Rd` and `Rd_lin`.
+function _update_infeasibilities!(solver::MadSDPSolver{T}) where {T}
     solver.inf_pr =
         LinearAlgebra.norm(solver.Rp, Inf) /
         max(T(1), LinearAlgebra.norm(LRO.cons_constant(solver.model), Inf))
@@ -368,17 +321,24 @@ function update_termination!(solver::MadSDPSolver{T}) where {T}
         cnorm = max(cnorm, LinearAlgebra.norm(_inner(solver.model).d_lin, Inf))
     end
     solver.inf_du = Rd_norm / max(T(1), cnorm)
-    solver.inf_compl = abs(pobj - dobj) / max(T(1), abs(pobj) + abs(dobj))
-    if max(solver.inf_pr, solver.inf_du, solver.inf_compl) <= opt.tol
+    return
+end
+
+# Sets the status from `converged` and the iteration and time limits.
+function _update_status!(solver::MadSDPSolver, converged::Bool)
+    opt = solver.opt
+    if converged
         solver.status = MadNLP.SOLVE_SUCCEEDED
     elseif solver.iter >= opt.max_iter
         solver.status = MadNLP.MAXIMUM_ITERATIONS_EXCEEDED
     elseif time() - solver.start_time >= opt.max_wall_time
         solver.status = MadNLP.MAXIMUM_WALLTIME_EXCEEDED
-    elseif solver.mu < opt.mu_min
-        solver.status = MadNLP.SOLVE_SUCCEEDED
     end
     return
+end
+
+function update_termination!(solver::MadSDPSolver)
+    return update_termination!(solver, solver.algorithm)
 end
 
 function print_header()
@@ -418,7 +378,7 @@ function solve!(solver::MadSDPSolver{T}; verbose::Bool = true) where {T}
     update_termination!(solver)
     verbose && print_iter(solver)
     while solver.status == MadNLP.REGULAR
-        iterate!(solver, solver.centering)
+        iterate!(solver)
         solver.status == MadNLP.REGULAR || break
         update_termination!(solver)
         verbose && print_iter(solver)

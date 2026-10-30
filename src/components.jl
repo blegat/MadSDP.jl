@@ -1,9 +1,68 @@
-# Algorithmic components of the primal-dual interior-point method.
+# Algorithmic components of the interior-point methods.
 #
 # `MadSDPSolver` is parametrized by one value of each of the following
 # abstract types. The solver specializes on their types, so choosing a
 # component has no runtime cost, and a new variant only needs a new
 # subtype and the methods documented with its abstract type.
+
+"""
+    AbstractAlgorithm
+
+Interior-point method. The other components (initial point, Schur solver)
+are shared by all algorithms. A subtype `A` implements
+* `block_workspace(A, T, n)`, stored in `block.work`,
+* `schur_scaling(A, block)` returning the `(L, R)` of the Schur complement
+  `⟨Aⱼ, L Aₖ R⟩`,
+* `default_initial_point(A)`,
+* `initialize_algorithm!(solver, A)`, called after the initial point is set,
+* `iterate!(solver, A)`,
+* `update_termination!(solver, A)`.
+"""
+abstract type AbstractAlgorithm end
+
+"""
+    PrimalDual(direction = NT(), step = EigenStep(), centering = Mehrotra())
+
+Infeasible primal-dual path-following method on `(X, y, S)`, configured by
+an [`AbstractDirection`](@ref), an [`AbstractStepLength`](@ref) and an
+[`AbstractCentering`](@ref).
+"""
+struct PrimalDual{D,S,C} <: AbstractAlgorithm
+    direction::D
+    step::S
+    centering::C
+end
+PrimalDual(; direction = NT(), step = EigenStep(), centering = Mehrotra()) =
+    PrimalDual(direction, step, centering)
+
+"""
+    DualCentering(; β = 0.2, δ = 1.0, A = 2.0, centering_max_iter = 50)
+
+Dual predictor-corrector method of [Nes25, Algorithm (7.13)]. It only
+carries `y` and `S = C - A*(y)` which stay feasible. Each iteration is
+either a damped Newton step on `ψₜ(y) = -log det S - t⟨b, y⟩` with `t` fixed,
+if the Newton decrement is larger than `β`, or a predictor step increasing
+`t`. The primal `X` is an estimate computed after each predictor step.
+If `A` is `nothing`, it is set to the value `δ + ω*(2β / (1 - β)²)` of
+[Nes25, (7.11)] for which the theoretical guarantee holds; the default
+values `β = 0.2` and `A = 2` are the ones of the experiments of [Nes25, §9].
+
+The method needs a dual feasible start such as [`DualShift`](@ref), the
+default, or an [`InitialPoint`](@ref) whose `y` gives `S ≻ 0`. Scalar (LP)
+blocks are not supported yet.
+
+[Nes25] Nesterov, Yurii. "Asymmetric Long-Step Primal-Dual Interior-Point
+Methods with Dual Centering." arXiv:2503.10155 (2025).
+"""
+struct DualCentering{T} <: AbstractAlgorithm
+    β::T
+    δ::T
+    A::Union{Nothing,T}
+    centering_max_iter::Int
+end
+function DualCentering(; β = 0.2, δ = 1.0, A = 2.0, centering_max_iter = 50)
+    return DualCentering(β, δ, A, centering_max_iter)
+end
 
 """
     AbstractDirection
@@ -143,6 +202,21 @@ abstract type AbstractInitialPoint end
 `X = S = β I` and `y = 0` with `β` scaled from the norms of the data.
 """
 struct ScaledIdentity <: AbstractInitialPoint end
+
+"""
+    DualShift(initial_shift = 1.0, max_shift = 1e10)
+
+Dual feasible start `y = -ρ 1` with `X = I` and `x = 1`. If `S = C ≻ 0`,
+`ρ = 0`. Otherwise, `ρ` is twice the first value of `initial_shift,
+2 initial_shift, 4 initial_shift, ...` such that `S = C - A*(y)` has a
+Cholesky factorization, to stay away from the boundary. Errors if `ρ`
+exceeds `max_shift`.
+"""
+struct DualShift{T} <: AbstractInitialPoint
+    initial_shift::T
+    max_shift::T
+end
+DualShift() = DualShift(1.0, 1e10)
 
 """
     InitialPoint(X, y; x = nothing)

@@ -66,11 +66,11 @@ function rhs!(h::Vector{T}, solver, μ::T, corrected::Bool) where {T}
     for (i, b) in enumerate(solver.blocks)
         @. b.buf = b.X - μ * b.Si
         if solver.rd_nonzero[i]
-            _apply_E!(b.buf2, b.dir, b, b.Rd)
+            _apply_E!(b.buf2, b.work.dir, b, b.Rd)
             b.buf .+= b.buf2
         end
         if corrected
-            b.buf .-= b.corr
+            b.buf .-= b.work.corr
         end
         LRO.add_jprod!(model, b.buf, h, LRO.MatrixIndex(i))
     end
@@ -95,19 +95,19 @@ function directions!(solver, dely::Vector{T}, μ::T, corrected::Bool) where {T}
     model = solver.model
     for (i, b) in enumerate(solver.blocks)
         AT_dy = LRO.unsafe_jtprod(model, dely, LRO.MatrixIndex(i))
-        copyto!(b.delS, b.Rd)
-        _axpy_sparse_dense!(b.delS, -one(T), AT_dy)
-        _symmetrize!(b.delS)
-        _apply_E!(b.buf2, b.dir, b, AT_dy)
-        @. b.delX = μ * b.Si - b.X + b.buf2
+        copyto!(b.work.delS, b.Rd)
+        _axpy_sparse_dense!(b.work.delS, -one(T), AT_dy)
+        _symmetrize!(b.work.delS)
+        _apply_E!(b.buf2, b.work.dir, b, AT_dy)
+        @. b.work.delX = μ * b.Si - b.X + b.buf2
         if solver.rd_nonzero[i]
-            _apply_E!(b.buf2, b.dir, b, b.Rd)
-            b.delX .-= b.buf2
+            _apply_E!(b.buf2, b.work.dir, b, b.Rd)
+            b.work.delX .-= b.buf2
         end
         if corrected
-            b.delX .+= b.corr
+            b.work.delX .+= b.work.corr
         end
-        _symmetrize!(b.delX)
+        _symmetrize!(b.work.delX)
     end
     if solver.n_scalar > 0
         LinearAlgebra.mul!(solver.delz, _inner(model).C_lin', dely)
@@ -127,7 +127,7 @@ end
 # stored in `delX`, `delS`, `delx` and `delz`.
 function correction!(solver)
     for b in solver.blocks
-        correction!(b.corr, b.dir, b)
+        correction!(b.work.corr, b.work.dir, b)
     end
     @inbounds for k = 1:(solver.n_scalar)
         solver.corr_lin[k] = -solver.delx[k] * solver.delz[k] * solver.zinv[k]
@@ -150,7 +150,7 @@ end
 # step lengths do not allocate.
 step_workspace(::EigenStep, ::Type{T}, n) where {T} = LRO.EigenWorkspace(zeros(T, n, n))
 
-prepare_step!(::EigenStep, b::SDPBlock) = _cholesky_factor!(b.Lx, b.X)
+prepare_step!(::EigenStep, b::SDPBlock) = _cholesky_factor!(b.work.Lx, b.X)
 
 # Fraction `τ` of the largest step keeping `L L' + α Δ` positive definite.
 function _eigen_step(workspace, buf, L, Δ, τ)
@@ -167,8 +167,8 @@ function step_lengths(s::EigenStep, solver)
     T = eltype(solver.y)
     α = β = one(T)
     for b in solver.blocks
-        α = min(α, _eigen_step(b.step, b.buf, b.Lx, b.delX, s.τ))
-        β = min(β, _eigen_step(b.step, b.buf, b.Ls, b.delS, s.τ))
+        α = min(α, _eigen_step(b.work.step, b.buf, b.work.Lx, b.work.delX, s.τ))
+        β = min(β, _eigen_step(b.work.step, b.buf, b.Ls, b.work.delS, s.τ))
     end
     if solver.n_scalar > 0
         α = min(α, T(s.τ) * _max_scalar_step(solver.x, solver.delx))
@@ -202,8 +202,8 @@ function _backtrack(s::CholeskyBacktrack, blocks, X, ΔX, x, dx)
 end
 
 function step_lengths(s::CholeskyBacktrack, solver)
-    α = _backtrack(s, solver.blocks, b -> b.X, b -> b.delX, solver.x, solver.delx)
-    β = _backtrack(s, solver.blocks, b -> b.S, b -> b.delS, solver.z, solver.delz)
+    α = _backtrack(s, solver.blocks, b -> b.X, b -> b.work.delX, solver.x, solver.delx)
+    β = _backtrack(s, solver.blocks, b -> b.S, b -> b.work.delS, solver.z, solver.delz)
     return α, β
 end
 
@@ -212,9 +212,9 @@ function affine_complementarity(solver, α::T, β::T) where {T}
     s = zero(T)
     for b in solver.blocks
         s += LinearAlgebra.dot(b.X, b.S)
-        s += β * LinearAlgebra.dot(b.X, b.delS)
-        s += α * LinearAlgebra.dot(b.delX, b.S)
-        s += α * β * LinearAlgebra.dot(b.delX, b.delS)
+        s += β * LinearAlgebra.dot(b.X, b.work.delS)
+        s += α * LinearAlgebra.dot(b.work.delX, b.S)
+        s += α * β * LinearAlgebra.dot(b.work.delX, b.work.delS)
     end
     @inbounds for k = 1:(solver.n_scalar)
         s += (solver.x[k] + α * solver.delx[k]) * (solver.z[k] + β * solver.delz[k])
