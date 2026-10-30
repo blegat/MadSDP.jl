@@ -205,17 +205,29 @@ end
         @test solver.status == MadNLP.SOLVE_SUCCEEDED
         @test isapprox(primal_obj(solver), 1.0; atol = 1e-5)
     end
+    # Measured in a function as `@allocated` at global scope also counts the
+    # boxing of the global variables.
+    function iteration_allocations(solver)
+        return @allocated begin
+            MadSDP.iterate!(solver, solver.centering)
+            MadSDP.update_termination!(solver)
+        end
+    end
     @testset "no allocation per iteration" begin
-        solver = MadSDPSolver(
-            maxcut;
-            direction = HKM(),
-            step = CholeskyBacktrack(),
-            centering = AdaptiveMu(),
-            initial_point,
-        )
-        MadSDP.initialize!(solver)
-        MadSDP.iterate!(solver, solver.centering)
-        @test @allocated(MadSDP.iterate!(solver, solver.centering)) < 1000
+        @testset "$direction $step $centering $schur" for direction in (NT(), HKM()),
+            step in (EigenStep(), CholeskyBacktrack()),
+            centering in (Mehrotra(), AdaptiveMu()),
+            schur in (DenseCholesky(), MadNLPSchur())
+
+            for model in (maxcut, mixed)
+                solver = MadSDPSolver(model; direction, step, centering, schur)
+                MadSDP.initialize!(solver)
+                # Compile, then measure an iteration that is not the first one.
+                iteration_allocations(solver)
+                @test solver.status == MadNLP.REGULAR
+                @test iteration_allocations(solver) == 0
+            end
+        end
     end
 end
 

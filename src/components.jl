@@ -55,6 +55,7 @@ struct HKM <: AbstractDirection end
 
 How the step lengths `α` (primal) and `β` (dual) are computed. A subtype `S`
 implements
+* `step_workspace(S, T, n)`, stored in `block.step`,
 * `prepare_step!(S, block)` called once per iteration,
 * `step_lengths(S, solver)` returning `(α, β)`.
 """

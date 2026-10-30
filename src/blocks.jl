@@ -11,7 +11,8 @@
 #   corr         second-order correction added to ΔX
 #   buf, buf2    scratch matrices
 #   dir          workspace of the search direction
-struct SDPBlock{T,DW}
+#   step         workspace of the step length strategy
+struct SDPBlock{T,DW,SW}
     n::Int
     X::Matrix{T}
     S::Matrix{T}
@@ -25,9 +26,14 @@ struct SDPBlock{T,DW}
     buf::Matrix{T}
     buf2::Matrix{T}
     dir::DW
+    step::SW
 end
 
-function SDPBlock{T}(direction::AbstractDirection, n::Integer) where {T}
+function SDPBlock{T}(
+    direction::AbstractDirection,
+    step::AbstractStepLength,
+    n::Integer,
+) where {T}
     mat() = zeros(T, n, n)
     return SDPBlock(
         Int(n),
@@ -43,6 +49,7 @@ function SDPBlock{T}(direction::AbstractDirection, n::Integer) where {T}
         mat(),
         mat(),
         direction_workspace(direction, T, n),
+        step_workspace(step, T, n),
     )
 end
 

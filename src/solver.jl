@@ -98,9 +98,9 @@ function MadSDPSolver(
     if nblocks == 0 && n_scalar == 0
         error("MadSDP: model has no variables.")
     end
-    B = typeof(SDPBlock{T}(direction, 0))
+    B = typeof(SDPBlock{T}(direction, step, 1))
     blocks = B[
-        SDPBlock{T}(direction, LRO.side_dimension(model, LRO.MatrixIndex(i))) for
+        SDPBlock{T}(direction, step, LRO.side_dimension(model, LRO.MatrixIndex(i))) for
         i = 1:nblocks
     ]
     m = model.meta.ncon

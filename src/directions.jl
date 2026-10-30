@@ -7,22 +7,39 @@
 # factors X = Lx Lx' and S = Ls Ls', if  Ls' Lx = U Σ V'  is the SVD, then
 #     G = Lx V Σ^{-1/2},     W = G G',
 # so that G⁻¹ X G⁻ᵀ = Gᵀ S G = Σ.
+# We obtain `V` and `Σ` from the eigendecomposition
+# `(Ls' Lx)' (Ls' Lx) = Lx' S Lx = V Σ² V'` which can be computed with a
+# reusable LAPACK workspace. On the central path, `Lx' S Lx = μ I` so
+# squaring does not deteriorate the conditioning.
 #
 # Reference : Loraine.jl/src/prepare_W.jl.
-struct NTWorkspace{T}
+struct NTWorkspace{T,E}
     W::Matrix{T}
     G::Matrix{T}
     Gi::Matrix{T}
     Lx::Matrix{T}
     M::Matrix{T}
+    N::Matrix{T}
     RNT::Matrix{T}
     tmp::Matrix{T}
     D::Vector{T}
+    eigen::E
 end
 
 function direction_workspace(::NT, ::Type{T}, n) where {T}
     mat() = zeros(T, n, n)
-    return NTWorkspace(mat(), mat(), mat(), mat(), mat(), mat(), mat(), zeros(T, n))
+    return NTWorkspace(
+        mat(),
+        mat(),
+        mat(),
+        mat(),
+        mat(),
+        mat(),
+        mat(),
+        mat(),
+        zeros(T, n),
+        LRO.EigenWorkspace(mat()),
+    )
 end
 
 function prepare_direction!(ws::NTWorkspace{T}, b::SDPBlock) where {T}
@@ -31,19 +48,25 @@ function prepare_direction!(ws::NTWorkspace{T}, b::SDPBlock) where {T}
     # M = Ls' * Lx
     copyto!(ws.M, ws.Lx)
     LinearAlgebra.lmul!(LinearAlgebra.LowerTriangular(b.Ls)', ws.M)
-    # TODO allocation-free SVD
-    F = LinearAlgebra.svd!(ws.M)
-    ws.D .= F.S
-    # G = Lx V Σ^{-1/2}
-    copyto!(ws.G, F.V)
-    LinearAlgebra.lmul!(Lx, ws.G)
-    @inbounds for k in axes(ws.G, 2)
-        ws.G[:, k] ./= sqrt(ws.D[k])
+    # N = M' * M = V Σ² V'
+    LinearAlgebra.mul!(ws.N, ws.M', ws.M)
+    _symmetrize!(ws.N)
+    λ, V = LRO.eigen!(ws.eigen, ws.N; vectors = true)
+    @inbounds for k in eachindex(ws.D)
+        λ[k] > zero(T) || return false
+        ws.D[k] = sqrt(λ[k])
     end
+    # G = Lx V Σ^{-1/2}
+    copyto!(ws.G, V)
+    LinearAlgebra.lmul!(Lx, ws.G)
     # Gi = Σ^{1/2} V' Lx⁻¹
-    copyto!(ws.Gi, F.Vt)
-    @inbounds for k in axes(ws.Gi, 1)
-        ws.Gi[k, :] .*= sqrt(ws.D[k])
+    LinearAlgebra.transpose!(ws.Gi, V)
+    @inbounds for k in axes(ws.G, 2)
+        scale = sqrt(ws.D[k])
+        for i in axes(ws.G, 1)
+            ws.G[i, k] /= scale
+            ws.Gi[k, i] *= scale
+        end
     end
     LinearAlgebra.rdiv!(ws.Gi, Lx)
     LinearAlgebra.mul!(ws.W, ws.G, ws.G')

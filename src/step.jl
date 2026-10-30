@@ -146,16 +146,20 @@ function _max_scalar_step(x::Vector{T}, dx::Vector{T}) where {T}
     return α
 end
 
+# The eigenvalues are computed with a reusable LAPACK workspace so that the
+# step lengths do not allocate.
+step_workspace(::EigenStep, ::Type{T}, n) where {T} = LRO.EigenWorkspace(zeros(T, n, n))
+
 prepare_step!(::EigenStep, b::SDPBlock) = _cholesky_factor!(b.Lx, b.X)
 
 # Fraction `τ` of the largest step keeping `L L' + α Δ` positive definite.
-function _eigen_step(buf, L, Δ, τ)
+function _eigen_step(workspace, buf, L, Δ, τ)
     T = eltype(buf)
     copyto!(buf, Δ)
     LinearAlgebra.ldiv!(LinearAlgebra.LowerTriangular(L), buf)
     LinearAlgebra.rdiv!(buf, LinearAlgebra.LowerTriangular(L)')
     _symmetrize!(buf)
-    λ = first(LinearAlgebra.eigvals!(LinearAlgebra.Symmetric(buf, :L), 1:1))
+    λ = minimum(first(LRO.eigen!(workspace, buf)))
     return λ > -sqrt(eps(T)) ? one(T) : min(one(T), -T(τ) / λ)
 end
 
@@ -163,8 +167,8 @@ function step_lengths(s::EigenStep, solver)
     T = eltype(solver.y)
     α = β = one(T)
     for b in solver.blocks
-        α = min(α, _eigen_step(b.buf, b.Lx, b.delX, s.τ))
-        β = min(β, _eigen_step(b.buf, b.Ls, b.delS, s.τ))
+        α = min(α, _eigen_step(b.step, b.buf, b.Lx, b.delX, s.τ))
+        β = min(β, _eigen_step(b.step, b.buf, b.Ls, b.delS, s.τ))
     end
     if solver.n_scalar > 0
         α = min(α, T(s.τ) * _max_scalar_step(solver.x, solver.delx))
@@ -172,6 +176,8 @@ function step_lengths(s::EigenStep, solver)
     end
     return α, β
 end
+
+step_workspace(::CholeskyBacktrack, ::Type, _) = nothing
 
 prepare_step!(::CholeskyBacktrack, ::SDPBlock) = true
 
