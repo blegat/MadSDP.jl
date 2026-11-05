@@ -83,21 +83,15 @@ function _symmetrize!(A::AbstractMatrix)
     return A
 end
 
-function safe_cholesky!(work::AbstractMatrix{T}, M::AbstractMatrix{T}) where {T}
-    copyto!(work, M)
-    _symmetrize!(work)
-    F = LinearAlgebra.cholesky!(LinearAlgebra.Hermitian(work, :L); check = false)
-    if !LinearAlgebra.issuccess(F)
-        return nothing
-    end
-    return F
-end
-
 # Cholesky factor of `M` in the lower triangle of `L`, the upper triangle
 # being zero. Returns `false` if `M` is not positive definite.
 function _cholesky_factor!(L::Matrix{T}, M::Matrix{T}) where {T}
-    F = safe_cholesky!(L, M)
-    isnothing(F) && return false
+    copyto!(L, M)
+    _symmetrize!(L)
+    F = LinearAlgebra.cholesky!(LinearAlgebra.Hermitian(L, :L); check = false)
+    if !LinearAlgebra.issuccess(F)
+        return false
+    end
     @inbounds for j in axes(L, 2), i = 1:(j-1)
         L[i, j] = zero(T)
     end

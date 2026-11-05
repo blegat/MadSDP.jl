@@ -6,6 +6,8 @@ import NLPModels
 import MadNLP
 using MadSDP
 
+include("blocks.jl")
+
 primal_obj(solver) = MadSDP.primal_objective(solver)
 
 # Build an LRO.Model from a single dense PSD block, given block cost `C` and a
