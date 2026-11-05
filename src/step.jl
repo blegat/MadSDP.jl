@@ -1,11 +1,11 @@
-# Predictor / corrector RHS and step computation for primal-dual NT.
+# Residuals, right-hand sides, search directions and step lengths, generic
+# over the components.
 #
 # Convention for the dual slack:  S_i := C_i - Σ_j y_j A_{i,j}.  We do NOT
 # enforce this exactly across iterations; instead we track the dual residual
 #     R_d[i]    = C_i - S_i - Σ_j y_j A_{i,j}                       (matrix block)
 #     R_d_lin   = d_lin - z - C_lin' y                              (scalar block)
-# and a corrector step at full β eliminates them.  Standard infeasible-IPM
-# mechanism — same as Loraine.
+# and a step of length 1 eliminates them.
 
 # R_p[j] = b_j − Σ_i ⟨A_{i,j}, X_i⟩ − (C_lin x)_j ;
 # R_d[i] = C_i − S_i − A^*(y)_i  ;   R_d_lin = d_lin − z − C_lin' y.
@@ -31,6 +31,10 @@ function update_residuals!(solver)
         _copy_to_dense!(b.Rd, LRO.grad(model, LRO.MatrixIndex(i)))
         b.Rd .-= b.S
         _axpy_sparse_dense!(b.Rd, -one(T), AT_y)
+        # A dual residual at the roundoff level is dropped so that the
+        # directions do not need to apply `E` to it.
+        threshold = 100 * eps(T) * max(one(T), solver.cnorm[i])
+        solver.rd_nonzero[i] = LinearAlgebra.norm(b.Rd, Inf) > threshold
     end
     # Scalar dual residual.
     if solver.n_scalar > 0
@@ -42,249 +46,172 @@ function update_residuals!(solver)
     return
 end
 
-function _copy_to_dense!(Y::AbstractMatrix{T}, X::AbstractMatrix{T}) where {T}
-    if X isa SparseArrays.SparseMatrixCSC
-        fill!(Y, zero(T))
-        rows = SparseArrays.rowvals(X)
-        vals = SparseArrays.nonzeros(X)
-        @inbounds for j in axes(X, 2)
-            for k in SparseArrays.nzrange(X, j)
-                Y[rows[k], j] = vals[k]
-            end
-        end
-    else
-        copyto!(Y, X)
+# `out = E(M)` where `M` may be the `FillArrays.Zeros` returned by
+# `LRO.unsafe_jtprod` if no constraint involves the block.
+function _apply_E!(out, ws, b, M)
+    if M isa LRO.FillArrays.Zeros
+        fill!(out, zero(eltype(out)))
+        return out
     end
-    return Y
+    return apply_E!(out, ws, b, M)
 end
 
-# In-place  Y .+= α * X  where X may be sparse and Y is dense.
-function _axpy_sparse_dense!(
-    Y::AbstractMatrix{T},
-    α::T,
-    X::SparseArrays.SparseMatrixCSC{T},
-) where {T}
-    rows = SparseArrays.rowvals(X)
-    vals = SparseArrays.nonzeros(X)
-    @inbounds for j in axes(X, 2)
-        for k in SparseArrays.nzrange(X, j)
-            Y[rows[k], j] += α * vals[k]
-        end
-    end
-    return Y
-end
-_axpy_sparse_dense!(Y::AbstractMatrix, α, X::AbstractMatrix) = (Y .+= α .* X; Y)
-
-# Predictor RHS  h = R_p + matrix-block contribution + scalar-block contribution.
-function predictor_rhs!(h::Vector{T}, solver) where {T}
+# Right-hand side `h` of the Schur system `H Δy = h` targeting `μ S⁻¹`:
+#   h = R_p + Σ_i A_i(X − μ S⁻¹ + E(R_d) − corr)
+#           + C_lin (x − μ ./ z + (x ./ z) .* R_d_lin − corr_lin)
+# where the corrections are only included if `corrected`.
+function rhs!(h::Vector{T}, solver, μ::T, corrected::Bool) where {T}
     model = solver.model
-    inner = _inner(model)
     copyto!(h, solver.Rp)
-    # Matrix blocks : h += A_i(W (R_d + S) W).
     for (i, b) in enumerate(solver.blocks)
-        @. b.buf_n = b.Rd + b.S
-        LinearAlgebra.mul!(b.buf_n2, b.W, b.buf_n)
-        LinearAlgebra.mul!(b.buf_n, b.buf_n2, b.W)
-        @inbounds for q = 1:(b.n), p = 1:(q-1)
-            v = (b.buf_n[p, q] + b.buf_n[q, p]) / 2
-            b.buf_n[p, q] = v
-            b.buf_n[q, p] = v
+        @. b.buf = b.X - μ * b.Si
+        if solver.rd_nonzero[i]
+            _apply_E!(b.buf2, b.dir, b, b.Rd)
+            b.buf .+= b.buf2
         end
-        LRO.add_jprod!(model, b.buf_n, h, LRO.MatrixIndex(i))
-    end
-    # Scalar block : h += C_lin * (W_lin .* (R_d_lin + z))  =
-    #                     C_lin * (W_lin .* R_d_lin) + C_lin * x.
-    if solver.n_scalar > 0
-        @. solver.work_scalar = solver.W_lin * solver.Rd_lin + solver.x
-        LinearAlgebra.mul!(solver.work_m, inner.C_lin, solver.work_scalar)
-        h .+= solver.work_m
-    end
-    return h
-end
-
-# Corrector RHS.
-function corrector_rhs!(h::Vector{T}, solver, σμ::T) where {T}
-    model = solver.model
-    inner = _inner(model)
-    copyto!(h, solver.Rp)
-    # Matrix blocks.
-    for (i, b) in enumerate(solver.blocks)
-        LinearAlgebra.mul!(b.buf_n, b.G', b.Rd)
-        LinearAlgebra.mul!(b.buf_n2, b.buf_n, b.G)
-        @inbounds for k = 1:(b.n)
-            b.buf_n2[k, k] += b.D[k] - σμ / b.D[k]
+        if corrected
+            b.buf .-= b.corr
         end
-        b.buf_n2 .-= b.RNT
-        LinearAlgebra.mul!(b.buf_n, b.G, b.buf_n2)
-        LinearAlgebra.mul!(b.buf_n2, b.buf_n, b.G')
-        @inbounds for q = 1:(b.n), p = 1:(q-1)
-            v = (b.buf_n2[p, q] + b.buf_n2[q, p]) / 2
-            b.buf_n2[p, q] = v
-            b.buf_n2[q, p] = v
-        end
-        LRO.add_jprod!(model, b.buf_n2, h, LRO.MatrixIndex(i))
+        LRO.add_jprod!(model, b.buf, h, LRO.MatrixIndex(i))
     end
-    # Scalar block:
-    #   h += C_lin * (W_lin .* R_d_lin + x + (δx .* δz − σμ) ./ z).
     if solver.n_scalar > 0
         @inbounds for k = 1:(solver.n_scalar)
-            solver.work_scalar[k] =
-                solver.W_lin[k] * solver.Rd_lin[k] +
-                solver.x[k] +
-                (solver.delx[k] * solver.delz[k] - σμ) * solver.Si_lin[k]
+            x, zinv = solver.x[k], solver.zinv[k]
+            v = x - μ * zinv + x * zinv * solver.Rd_lin[k]
+            if corrected
+                v -= solver.corr_lin[k]
+            end
+            solver.work_scalar[k] = v
         end
-        LinearAlgebra.mul!(solver.work_m, inner.C_lin, solver.work_scalar)
-        h .+= solver.work_m
+        LinearAlgebra.mul!(h, _inner(model).C_lin, solver.work_scalar, true, true)
     end
     return h
 end
 
-# δz = R_d_lin − C_lin' δy ;  δx_predictor = −x − W_lin .* δz ;
-# δx_corrector = σμ./z − x − W_lin .* δz + RNT_lin.
-function compute_directions!(solver, dely::Vector{T}, kind::Symbol, σμ::T) where {T}
+# Directions from the solution `Δy` of the Schur system:
+#   ΔS = R_d − A*(Δy),   ΔX = μ S⁻¹ − X − E(R_d) + E(A*(Δy)) + corr
+#   Δz = R_d_lin − C_lin' Δy,   Δx = μ ./ z − x − (x ./ z) .* Δz + corr_lin
+function directions!(solver, dely::Vector{T}, μ::T, corrected::Bool) where {T}
     model = solver.model
-    inner = _inner(model)
-    # Matrix block directions.
     for (i, b) in enumerate(solver.blocks)
         AT_dy = LRO.unsafe_jtprod(model, dely, LRO.MatrixIndex(i))
         copyto!(b.delS, b.Rd)
         _axpy_sparse_dense!(b.delS, -one(T), AT_dy)
-        @inbounds for q = 1:(b.n), p = 1:(q-1)
-            v = (b.delS[p, q] + b.delS[q, p]) / 2
-            b.delS[p, q] = v
-            b.delS[q, p] = v
+        _symmetrize!(b.delS)
+        _apply_E!(b.buf2, b.dir, b, AT_dy)
+        @. b.delX = μ * b.Si - b.X + b.buf2
+        if solver.rd_nonzero[i]
+            _apply_E!(b.buf2, b.dir, b, b.Rd)
+            b.delX .-= b.buf2
         end
-        LinearAlgebra.mul!(b.buf_n, b.W, b.delS)
-        LinearAlgebra.mul!(b.buf_n2, b.buf_n, b.W)
-        if kind === :predict
-            @. b.delX = -b.X - b.buf_n2
-        elseif kind === :correct
-            LinearAlgebra.mul!(b.buf_n, b.G, b.RNT)
-            LinearAlgebra.mul!(b.delX, b.buf_n, b.G')
-            @. b.delX = σμ * b.Si - b.X - b.buf_n2 + b.delX
-        else
-            error("unknown kind $kind")
+        if corrected
+            b.delX .+= b.corr
         end
-        @inbounds for q = 1:(b.n), p = 1:(q-1)
-            v = (b.delX[p, q] + b.delX[q, p]) / 2
-            b.delX[p, q] = v
-            b.delX[q, p] = v
-        end
+        _symmetrize!(b.delX)
     end
-    # Scalar block directions.
     if solver.n_scalar > 0
-        # δz = R_d_lin − C_lin' δy.
-        LinearAlgebra.mul!(solver.delz, inner.C_lin', dely)
+        LinearAlgebra.mul!(solver.delz, _inner(model).C_lin', dely)
         @inbounds for k = 1:(solver.n_scalar)
             solver.delz[k] = solver.Rd_lin[k] - solver.delz[k]
-        end
-        if kind === :predict
-            @inbounds for k = 1:(solver.n_scalar)
-                solver.delx[k] = -solver.x[k] - solver.W_lin[k] * solver.delz[k]
-            end
-        elseif kind === :correct
-            @inbounds for k = 1:(solver.n_scalar)
-                solver.delx[k] =
-                    σμ * solver.Si_lin[k] - solver.x[k] - solver.W_lin[k] * solver.delz[k] +
-                    solver.RNT_lin[k]
+            x, zinv = solver.x[k], solver.zinv[k]
+            solver.delx[k] = μ * zinv - x - x * zinv * solver.delz[k]
+            if corrected
+                solver.delx[k] += solver.corr_lin[k]
             end
         end
     end
     return
 end
 
-# Eigenvalue-based fraction-to-boundary on matrix blocks combined with scalar
-# fraction-to-boundary  α = -τ / min(δx ./ x)  on the LP block.
-function fraction_to_boundary(solver, τ::T) where {T}
-    αmin = one(T)
-    βmin = one(T)
+# Second-order corrections from the affine-scaling directions currently
+# stored in `delX`, `delS`, `delx` and `delz`.
+function correction!(solver)
     for b in solver.blocks
-        LinearAlgebra.mul!(b.buf_n, b.Gi, b.delX)
-        LinearAlgebra.mul!(b.buf_n2, b.buf_n, b.Gi')
-        @inbounds for q = 1:(b.n), p = 1:(b.n)
-            b.buf_n2[p, q] *= b.DDsi[p] * b.DDsi[q]
-        end
-        @inbounds for q = 1:(b.n), p = 1:(q-1)
-            v = (b.buf_n2[p, q] + b.buf_n2[q, p]) / 2
-            b.buf_n2[p, q] = v
-            b.buf_n2[q, p] = v
-        end
-        λX = LinearAlgebra.eigmin(LinearAlgebra.Symmetric(b.buf_n2))
-        αi = λX > -eps(T)^T(1//2) ? one(T) : min(one(T), -τ / λX)
-        αmin = min(αmin, αi)
-
-        LinearAlgebra.mul!(b.buf_n, b.G', b.delS)
-        LinearAlgebra.mul!(b.buf_n2, b.buf_n, b.G)
-        @inbounds for q = 1:(b.n), p = 1:(b.n)
-            b.buf_n2[p, q] *= b.DDsi[p] * b.DDsi[q]
-        end
-        @inbounds for q = 1:(b.n), p = 1:(q-1)
-            v = (b.buf_n2[p, q] + b.buf_n2[q, p]) / 2
-            b.buf_n2[p, q] = v
-            b.buf_n2[q, p] = v
-        end
-        λS = LinearAlgebra.eigmin(LinearAlgebra.Symmetric(b.buf_n2))
-        βi = λS > -eps(T)^T(1//2) ? one(T) : min(one(T), -τ / λS)
-        βmin = min(βmin, βi)
+        correction!(b.corr, b.dir, b)
     end
-    if solver.n_scalar > 0
-        @inbounds for k = 1:(solver.n_scalar)
-            dx, x = solver.delx[k], solver.x[k]
-            if dx < zero(T) && x > zero(T)
-                αmin = min(αmin, -τ * x / dx)
-            end
-            dz, z = solver.delz[k], solver.z[k]
-            if dz < zero(T) && z > zero(T)
-                βmin = min(βmin, -τ * z / dz)
-            end
-        end
-    end
-    return αmin, βmin
-end
-
-# Mehrotra second-order correction (matrix + scalar).
-function update_RNT!(solver)
-    for b in solver.blocks
-        LinearAlgebra.mul!(b.buf_n, b.Gi, b.delX)
-        LinearAlgebra.mul!(b.RNT, b.buf_n, b.delS)
-        LinearAlgebra.mul!(b.buf_n, b.RNT, b.G)
-
-        LinearAlgebra.mul!(b.RNT, b.G', b.delS)
-        LinearAlgebra.mul!(b.buf_n2, b.RNT, b.delX)
-        LinearAlgebra.mul!(b.RNT, b.buf_n2, b.Gi')
-
-        @inbounds for q = 1:(b.n), p = 1:(b.n)
-            num = -(b.buf_n[p, q] + b.RNT[p, q])
-            den = b.D[p] + b.D[q]
-            b.RNT[p, q] = num / den
-        end
-    end
-    if solver.n_scalar > 0
-        @inbounds for k = 1:(solver.n_scalar)
-            solver.RNT_lin[k] = -solver.delx[k] * solver.delz[k] * solver.Si_lin[k]
-        end
+    @inbounds for k = 1:(solver.n_scalar)
+        solver.corr_lin[k] = -solver.delx[k] * solver.delz[k] * solver.zinv[k]
     end
     return
 end
 
-# Trial complementarity at affine point.
+# Largest `α ≤ 1` such that `x + α Δx ≥ 0`.
+function _max_scalar_step(x::Vector{T}, dx::Vector{T}) where {T}
+    α = typemax(T)
+    @inbounds for k in eachindex(x)
+        if dx[k] < zero(T)
+            α = min(α, -x[k] / dx[k])
+        end
+    end
+    return α
+end
+
+prepare_step!(::EigenStep, b::SDPBlock) = _cholesky_factor!(b.Lx, b.X)
+
+# Fraction `τ` of the largest step keeping `L L' + α Δ` positive definite.
+function _eigen_step(buf, L, Δ, τ)
+    T = eltype(buf)
+    copyto!(buf, Δ)
+    LinearAlgebra.ldiv!(LinearAlgebra.LowerTriangular(L), buf)
+    LinearAlgebra.rdiv!(buf, LinearAlgebra.LowerTriangular(L)')
+    _symmetrize!(buf)
+    λ = first(LinearAlgebra.eigvals!(LinearAlgebra.Symmetric(buf, :L), 1:1))
+    return λ > -sqrt(eps(T)) ? one(T) : min(one(T), -T(τ) / λ)
+end
+
+function step_lengths(s::EigenStep, solver)
+    T = eltype(solver.y)
+    α = β = one(T)
+    for b in solver.blocks
+        α = min(α, _eigen_step(b.buf, b.Lx, b.delX, s.τ))
+        β = min(β, _eigen_step(b.buf, b.Ls, b.delS, s.τ))
+    end
+    if solver.n_scalar > 0
+        α = min(α, T(s.τ) * _max_scalar_step(solver.x, solver.delx))
+        β = min(β, T(s.τ) * _max_scalar_step(solver.z, solver.delz))
+    end
+    return α, β
+end
+
+prepare_step!(::CholeskyBacktrack, ::SDPBlock) = true
+
+function _backtrack(s::CholeskyBacktrack, blocks, X, ΔX, x, dx)
+    T = eltype(x)
+    α = one(T)
+    for b in blocks
+        while !_is_add_mul_posdef(b.buf, X(b), α, ΔX(b))
+            α *= T(s.shrink)
+            if α < eps(T)
+                return zero(T)
+            end
+        end
+    end
+    if !isone(α)
+        α *= T(s.boundary)
+    end
+    if !isempty(x)
+        α = min(α, T(s.boundary) * _max_scalar_step(x, dx))
+    end
+    return α
+end
+
+function step_lengths(s::CholeskyBacktrack, solver)
+    α = _backtrack(s, solver.blocks, b -> b.X, b -> b.delX, solver.x, solver.delx)
+    β = _backtrack(s, solver.blocks, b -> b.S, b -> b.delS, solver.z, solver.delz)
+    return α, β
+end
+
+# Complementarity at the trial point `(X + α ΔX, S + β ΔS)`.
 function affine_complementarity(solver, α::T, β::T) where {T}
     s = zero(T)
-    n = 0
     for b in solver.blocks
         s += LinearAlgebra.dot(b.X, b.S)
         s += β * LinearAlgebra.dot(b.X, b.delS)
         s += α * LinearAlgebra.dot(b.delX, b.S)
         s += α * β * LinearAlgebra.dot(b.delX, b.delS)
-        n += b.n
     end
-    if solver.n_scalar > 0
-        @inbounds for k = 1:(solver.n_scalar)
-            xk = solver.x[k] + α * solver.delx[k]
-            zk = solver.z[k] + β * solver.delz[k]
-            s += xk * zk
-        end
-        n += solver.n_scalar
+    @inbounds for k = 1:(solver.n_scalar)
+        s += (solver.x[k] + α * solver.delx[k]) * (solver.z[k] + β * solver.delz[k])
     end
-    return s / max(n, 1)
+    return s / max(_barrier_dim(solver), 1)
 end
