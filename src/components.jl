@@ -125,7 +125,9 @@ abstract type AbstractStepLength end
 
 Takes the fraction `τ` of the maximal step keeping `X` and `S` positive
 definite, computed from the smallest eigenvalue of `L⁻¹ ΔX L⁻ᵀ` where
-`X = L Lᵀ`, capped at `1`.
+`X = L Lᵀ`, capped at `1`. The eigenvalue is estimated by
+`LowRankOpt.lanczos_eigmin!` with products by `L⁻¹ ΔX L⁻ᵀ`, without forming
+it.
 """
 struct EigenStep{T} <: AbstractStepLength
     τ::T
