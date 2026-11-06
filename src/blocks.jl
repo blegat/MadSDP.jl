@@ -1,33 +1,25 @@
-# Per-PSD-block state of the primal-dual interior-point method.
+# Per-PSD-block state of the interior-point methods.
 #
 # For block `i` of side dimension `n`:
 #   X, S         primal and dual PSD matrices, central path: X S = μ I
-#   delX, delS   search directions
 #   Rd           dual residual  C - S - A*(y)
 #   Ls           Cholesky factor of S (lower triangle)
 #   Si           S⁻¹
-#   Lx           Cholesky factor of X, only computed if the step length
-#                strategy needs it
-#   corr         second-order correction added to ΔX
 #   buf, buf2    scratch matrices
-#   dir          workspace of the search direction
-struct SDPBlock{T,DW}
+#   work         workspace of the algorithm, see `block_workspace`
+struct SDPBlock{T,W}
     n::Int
     X::Matrix{T}
     S::Matrix{T}
-    delX::Matrix{T}
-    delS::Matrix{T}
     Rd::Matrix{T}
     Ls::Matrix{T}
     Si::Matrix{T}
-    Lx::Matrix{T}
-    corr::Matrix{T}
     buf::Matrix{T}
     buf2::Matrix{T}
-    dir::DW
+    work::W
 end
 
-function SDPBlock{T}(direction::AbstractDirection, n::Integer) where {T}
+function SDPBlock{T}(algorithm::AbstractAlgorithm, n::Integer) where {T}
     mat() = zeros(T, n, n)
     return SDPBlock(
         Int(n),
@@ -38,11 +30,35 @@ function SDPBlock{T}(direction::AbstractDirection, n::Integer) where {T}
         mat(),
         mat(),
         mat(),
+        block_workspace(algorithm, T, n),
+    )
+end
+
+# Workspace of `PrimalDual` for one block:
+#   delX, delS   search directions
+#   Lx           Cholesky factor of X, only computed if the step length
+#                strategy needs it
+#   corr         second-order correction added to ΔX
+#   dir          workspace of the search direction
+#   step         workspace of the step length strategy
+struct PrimalDualBlock{T,DW,SW}
+    delX::Matrix{T}
+    delS::Matrix{T}
+    Lx::Matrix{T}
+    corr::Matrix{T}
+    dir::DW
+    step::SW
+end
+
+function block_workspace(a::PrimalDual, ::Type{T}, n) where {T}
+    mat() = zeros(T, n, n)
+    return PrimalDualBlock(
         mat(),
         mat(),
         mat(),
         mat(),
-        direction_workspace(direction, T, n),
+        direction_workspace(a.direction, T, n),
+        step_workspace(a.step, T, n),
     )
 end
 
@@ -67,21 +83,15 @@ function _symmetrize!(A::AbstractMatrix)
     return A
 end
 
-function safe_cholesky!(work::AbstractMatrix{T}, M::AbstractMatrix{T}) where {T}
-    copyto!(work, M)
-    _symmetrize!(work)
-    F = LinearAlgebra.cholesky!(LinearAlgebra.Hermitian(work, :L); check = false)
-    if !LinearAlgebra.issuccess(F)
-        return nothing
-    end
-    return F
-end
-
 # Cholesky factor of `M` in the lower triangle of `L`, the upper triangle
 # being zero. Returns `false` if `M` is not positive definite.
 function _cholesky_factor!(L::Matrix{T}, M::Matrix{T}) where {T}
-    F = safe_cholesky!(L, M)
-    isnothing(F) && return false
+    copyto!(L, M)
+    _symmetrize!(L)
+    F = LinearAlgebra.cholesky!(LinearAlgebra.Hermitian(L, :L); check = false)
+    if !LinearAlgebra.issuccess(F)
+        return false
+    end
     @inbounds for j in axes(L, 2), i = 1:(j-1)
         L[i, j] = zero(T)
     end

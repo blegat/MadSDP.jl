@@ -55,6 +55,7 @@ const CONFIGS = [
     "mc_psd-like" => mc_psd_like,
     "HKM + Mehrotra" => L -> (direction = HKM(),),
     "NT + Mehrotra" => L -> NamedTuple(),
+    "DualCentering" => L -> (algorithm = DualCentering(),),
 ]
 
 # `mc_psd` stops when the gap is below `10^-5.5 |obj|` while MadSDP divides

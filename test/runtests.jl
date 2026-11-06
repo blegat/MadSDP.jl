@@ -6,6 +6,8 @@ import NLPModels
 import MadNLP
 using MadSDP
 
+include("blocks.jl")
+
 primal_obj(solver) = MadSDP.primal_objective(solver)
 
 # Build an LRO.Model from a single dense PSD block, given block cost `C` and a
@@ -205,21 +207,45 @@ end
         @test solver.status == MadNLP.SOLVE_SUCCEEDED
         @test isapprox(primal_obj(solver), 1.0; atol = 1e-5)
     end
+    # Measured in a function as `@allocated` at global scope also counts the
+    # boxing of the global variables.
+    function iteration_allocations(solver)
+        return @allocated begin
+            MadSDP.iterate!(solver)
+            MadSDP.update_termination!(solver)
+        end
+    end
     @testset "no allocation per iteration" begin
-        solver = MadSDPSolver(
-            maxcut;
-            direction = HKM(),
-            step = CholeskyBacktrack(),
-            centering = AdaptiveMu(),
-            initial_point,
-        )
-        MadSDP.initialize!(solver)
-        MadSDP.iterate!(solver, solver.centering)
-        @test @allocated(MadSDP.iterate!(solver, solver.centering)) < 1000
+        @testset "$direction $step $centering $schur" for direction in (NT(), HKM()),
+            step in (EigenStep(), CholeskyBacktrack()),
+            centering in (Mehrotra(), AdaptiveMu()),
+            schur in (DenseCholesky(), MadNLPSchur())
+
+            for model in (maxcut, mixed)
+                solver = MadSDPSolver(model; direction, step, centering, schur)
+                MadSDP.initialize!(solver)
+                # Compile, then measure an iteration that is not the first one.
+                iteration_allocations(solver)
+                @test solver.status == MadNLP.REGULAR
+                @test iteration_allocations(solver) == 0
+            end
+        end
+        @testset "$schur DualCentering" for schur in (DenseCholesky(), MadNLPSchur())
+            solver = MadSDPSolver(maxcut; algorithm = DualCentering(), schur)
+            MadSDP.initialize!(solver)
+            # Both the damped Newton steps and the predictor steps.
+            for _ = 1:6
+                iteration_allocations(solver)
+                @test solver.status == MadNLP.REGULAR
+                @test iteration_allocations(solver) == 0
+            end
+            @test solver.state.n_newton > 0
+            @test solver.state.n_predictor > 0
+        end
     end
 end
 
-@testset "dual_solver" begin
+@testset "DualCentering" begin
     include("dual_runtests.jl")
 end
 
