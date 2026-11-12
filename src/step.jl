@@ -146,20 +146,40 @@ function _max_scalar_step(x::Vector{T}, dx::Vector{T}) where {T}
     return α
 end
 
-# The eigenvalues are computed with a reusable LAPACK workspace so that the
-# step lengths do not allocate.
-step_workspace(::EigenStep, ::Type{T}, n) where {T} = LRO.EigenWorkspace(zeros(T, n, n))
+# `L⁻¹ Δ L⁻ᵀ` given by its products so that the step length does not form it
+# with triangular solves of matrices.
+struct _CongruenceInverse{T}
+    L::Matrix{T}
+    Δ::Matrix{T}
+    tmp::Vector{T}
+end
+
+function LinearAlgebra.mul!(w::AbstractVector, A::_CongruenceInverse, v::AbstractVector)
+    L = LinearAlgebra.LowerTriangular(A.L)
+    copyto!(A.tmp, v)
+    LinearAlgebra.ldiv!(L', A.tmp)
+    LinearAlgebra.mul!(w, LinearAlgebra.Symmetric(A.Δ, :U), A.tmp)
+    LinearAlgebra.ldiv!(L, w)
+    return w
+end
+
+struct _EigenStepWorkspace{T}
+    eigen::LRO.EigenWorkspace{T}
+    tmp::Vector{T}
+end
+
+# The Lanczos iterations reuse their workspace so that the step lengths do not
+# allocate.
+function step_workspace(::EigenStep, ::Type{T}, n) where {T}
+    return _EigenStepWorkspace(LRO.EigenWorkspace(zeros(T, n, n)), zeros(T, n))
+end
 
 prepare_step!(::EigenStep, b::SDPBlock) = _cholesky_factor!(b.work.Lx, b.X)
 
 # Fraction `τ` of the largest step keeping `L L' + α Δ` positive definite.
-function _eigen_step(workspace, buf, L, Δ, τ)
-    T = eltype(buf)
-    copyto!(buf, Δ)
-    LinearAlgebra.ldiv!(LinearAlgebra.LowerTriangular(L), buf)
-    LinearAlgebra.rdiv!(buf, LinearAlgebra.LowerTriangular(L)')
-    _symmetrize!(buf)
-    λ = minimum(first(LRO.eigen!(workspace, buf)))
+function _eigen_step(workspace::_EigenStepWorkspace{T}, L, Δ, τ) where {T}
+    A = _CongruenceInverse(L, Δ, workspace.tmp)
+    λ = LRO.lanczos_eigmin!(workspace.eigen, A)
     return λ > -sqrt(eps(T)) ? one(T) : min(one(T), -T(τ) / λ)
 end
 
@@ -167,8 +187,8 @@ function step_lengths(s::EigenStep, solver)
     T = eltype(solver.y)
     α = β = one(T)
     for b in solver.blocks
-        α = min(α, _eigen_step(b.work.step, b.buf, b.work.Lx, b.work.delX, s.τ))
-        β = min(β, _eigen_step(b.work.step, b.buf, b.Ls, b.work.delS, s.τ))
+        α = min(α, _eigen_step(b.work.step, b.work.Lx, b.work.delX, s.τ))
+        β = min(β, _eigen_step(b.work.step, b.Ls, b.work.delS, s.τ))
     end
     if solver.n_scalar > 0
         α = min(α, T(s.τ) * _max_scalar_step(solver.x, solver.delx))
