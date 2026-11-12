@@ -25,6 +25,7 @@ function update_residuals!(solver)
     @inbounds for j in eachindex(solver.Rp)
         solver.Rp[j] = LRO.cons_constant(model)[j] - solver.Rp[j]
     end
+    equality_residuals!(solver.schur, solver)
     # Matrix dual residual.
     for (i, b) in enumerate(solver.blocks)
         AT_y = LRO.unsafe_jtprod(model, solver.y, LRO.MatrixIndex(i))

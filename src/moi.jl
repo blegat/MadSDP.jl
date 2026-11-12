@@ -57,7 +57,10 @@ function SolverCore.solve!(
     verbose::Int = 1,
     kws...,
 ) where {T}
-    s.inner = MadSDPSolver(LRO.dual_model(s.model); kws...)
+    if iszero(s.model.meta.nvar)
+        return _constant_problem!(s)
+    end
+    s.inner = MadSDPSolver(s.model; kws...)
     solve!(s.inner; verbose = verbose > 0)
     # Populate the stats fields LRO.Optimizer reads from.
     stats = s.stats
@@ -66,9 +69,20 @@ function SolverCore.solve!(
     SolverCore.set_solver_specific!(stats, :dual_objective, -primal_objective(s.inner))
     SolverCore.set_solution!(stats, s.inner.y)
     multipliers = LRO.VectorizedConeVector(stats.multipliers, s.model.dim)
-    multipliers[LRO.ScalarIndex] .= -s.inner.x
-    for (i, block) in enumerate(s.inner.blocks)
-        multipliers[LRO.MatrixIndex(i)] .= -block.X
+    if s.inner.schur isa Union{AugmentedKKTWorkspace,RootKKTWorkspace}
+        ws = equality_block(s.inner.schur)
+        fill!(multipliers, zero(T))
+        _, _, rows, signs = scalar_block_bounds(s.model)
+        for k in eachindex(rows)
+            multipliers[LRO.ScalarIndex][rows[k]] += signs[k] * s.inner.x[k]
+        end
+        multipliers[LRO.ScalarIndex][ws.equalities] .= ws.eta
+        for (i, block) in enumerate(s.inner.blocks)
+            multipliers[LRO.MatrixIndex(i)] .= -block.X
+        end
+    else
+        cone = LRO.ShapedConeVector(s.inner.x, [b.X for b in s.inner.blocks])
+        copyto!(multipliers, -LRO.cone_multipliers(s.model, cone))
     end
     SolverCore.set_constraint_multipliers!(stats, stats.multipliers)
     SolverCore.set_residuals!(stats, s.inner.inf_du, s.inner.inf_pr)
@@ -96,4 +110,23 @@ function Optimizer()
     opt = LRO.Optimizer{Float64}()
     MOI.set(opt, MOI.RawOptimizerAttribute("solver"), Solver)
     return opt
+end
+
+function _constant_problem!(s::Solver{T}) where {T}
+    model, stats = s.model, s.stats
+    feasible = all(model.meta.lcon .<= model.constant .<= model.meta.ucon)
+    cone = LRO.VectorizedConeVector(model.constant, model.dim)
+    for idx in LRO.matrix_indices(model)
+        feasible &=
+            LinearAlgebra.eigmin(LinearAlgebra.Symmetric(cone[idx])) >= -sqrt(eps(T))
+    end
+    SolverCore.set_status!(stats, feasible ? :first_order : :infeasible)
+    SolverCore.set_solution!(stats, T[])
+    SolverCore.set_objective!(stats, model.objective_constant)
+    SolverCore.set_solver_specific!(stats, :dual_objective, zero(T))
+    SolverCore.set_constraint_multipliers!(stats, zeros(T, model.meta.ncon))
+    SolverCore.set_residuals!(stats, feasible ? zero(T) : T(Inf), zero(T))
+    SolverCore.set_iter!(stats, 0)
+    SolverCore.set_time!(stats, 0.0)
+    return stats
 end

@@ -7,23 +7,20 @@
 # factors X = Lx Lx' and S = Ls Ls', if  Ls' Lx = U Σ V'  is the SVD, then
 #     G = Lx V Σ^{-1/2},     W = G G',
 # so that G⁻¹ X G⁻ᵀ = Gᵀ S G = Σ.
-# We obtain `V` and `Σ` from the eigendecomposition
-# `(Ls' Lx)' (Ls' Lx) = Lx' S Lx = V Σ² V'` which can be computed with a
-# reusable LAPACK workspace. On the central path, `Lx' S Lx = μ I` so
-# squaring does not deteriorate the conditioning.
+# Compute the SVD directly: forming M'M would square its condition number
+# and can lose positive singular values near the cone boundary.
 #
-# Reference : Loraine.jl/src/prepare_W.jl.
+# Reference: Loraine.jl/src/prepare_W.jl.
 struct NTWorkspace{T,E}
     W::Matrix{T}
     G::Matrix{T}
     Gi::Matrix{T}
     Lx::Matrix{T}
     M::Matrix{T}
-    N::Matrix{T}
     RNT::Matrix{T}
     tmp::Matrix{T}
     D::Vector{T}
-    eigen::E
+    svd::E
 end
 
 function direction_workspace(::NT, ::Type{T}, n) where {T}
@@ -36,9 +33,8 @@ function direction_workspace(::NT, ::Type{T}, n) where {T}
         mat(),
         mat(),
         mat(),
-        mat(),
         zeros(T, n),
-        LRO.EigenWorkspace(mat()),
+        FastLapackInterface.SVDsvdWs(mat(); jobu = 'N', jobvt = 'A'),
     )
 end
 
@@ -48,19 +44,15 @@ function prepare_direction!(ws::NTWorkspace{T}, b::SDPBlock) where {T}
     # M = Ls' * Lx
     copyto!(ws.M, ws.Lx)
     LinearAlgebra.lmul!(LinearAlgebra.LowerTriangular(b.Ls)', ws.M)
-    # N = M' * M = V Σ² V'
-    LinearAlgebra.mul!(ws.N, ws.M', ws.M)
-    _symmetrize!(ws.N)
-    λ, V = LRO.eigen!(ws.eigen, ws.N; vectors = true)
-    @inbounds for k in eachindex(ws.D)
-        λ[k] > zero(T) || return false
-        ws.D[k] = sqrt(λ[k])
+    _, singular_values, Vt = LinearAlgebra.LAPACK.gesvd!(ws.svd, 'N', 'A', ws.M)
+    copyto!(ws.D, singular_values)
+    if any(<=(zero(T)), ws.D)
+        return false
     end
-    # G = Lx V Σ^{-1/2}
-    copyto!(ws.G, V)
+    # G = Lx V Σ⁻¹ᐟ² and Gi = Σ¹ᐟ² V' Lx⁻¹.
+    LinearAlgebra.transpose!(ws.G, Vt)
     LinearAlgebra.lmul!(Lx, ws.G)
-    # Gi = Σ^{1/2} V' Lx⁻¹
-    LinearAlgebra.transpose!(ws.Gi, V)
+    copyto!(ws.Gi, Vt)
     @inbounds for k in axes(ws.G, 2)
         scale = sqrt(ws.D[k])
         for i in axes(ws.G, 1)

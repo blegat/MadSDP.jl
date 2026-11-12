@@ -92,6 +92,7 @@ function MadSDPSolver(
     algorithm::AbstractAlgorithm = PrimalDual(direction, step, centering),
     initial_point::AbstractInitialPoint = default_initial_point(algorithm),
     schur::AbstractSchurSolver = DenseCholesky(),
+    native_model = nothing,
     options...,
 ) where {T}
     opt = MadSDPOptions{T}(; options...)
@@ -99,7 +100,7 @@ function MadSDPSolver(
         LRO.BufferedDualModel(model, opt.datasparsity; schur = needs_schur_buffer(schur))
     nblocks = LRO.num_matrices(model)
     n_scalar = LRO.num_scalars(model)
-    if nblocks == 0 && n_scalar == 0
+    if nblocks == 0 && n_scalar == 0 && !(schur isa Union{AugmentedKKT,RootKKT})
         error("MadSDP: model has no variables.")
     end
     check_model(algorithm, model)
@@ -122,7 +123,7 @@ function MadSDPSolver(
         algorithm,
         algorithm_state(algorithm, T, m),
         initial_point,
-        schur_workspace(schur, T, m),
+        schur_workspace(schur, T, m, isnothing(native_model) ? model : native_model),
         blocks,
         vec_m(),
         vec_m(),
@@ -169,7 +170,7 @@ function primal_objective(solver::MadSDPSolver{T}) where {T}
     if solver.n_scalar > 0
         s += LinearAlgebra.dot(LRO.grad(solver.model, LRO.ScalarIndex), solver.x)
     end
-    return s
+    return s + equality_objective(solver.schur)
 end
 
 function dual_objective(solver::MadSDPSolver{T}) where {T}
@@ -284,6 +285,7 @@ end
 
 function initialize!(solver::MadSDPSolver)
     initial_point!(solver, solver.initial_point)
+    initialize_scalar_bounds!(solver.schur, solver)
     solver.iter = 0
     solver.status = MadNLP.REGULAR
     solver.start_time = time()
@@ -328,7 +330,7 @@ function _update_infeasibilities!(solver::MadSDPSolver{T}) where {T}
         Rd_norm = max(Rd_norm, LinearAlgebra.norm(solver.Rd_lin, Inf))
         cnorm = max(cnorm, LinearAlgebra.norm(_inner(solver.model).d_lin, Inf))
     end
-    solver.inf_du = Rd_norm / max(T(1), cnorm)
+    solver.inf_du = max(Rd_norm / max(T(1), cnorm), equality_infeasibility(solver.schur))
     return
 end
 
@@ -402,6 +404,25 @@ with [`MadSDPSolver`](@ref). Returns the populated `MadSDPSolver`.
 """
 madsdp(model; kwargs...) = solve!(MadSDPSolver(model; kwargs...))
 
-function MadSDPSolver(model::LRO.Model; options...)
-    return MadSDPSolver(LRO.dual_model(model); options...)
+function MadSDPSolver(model::LRO.Model; schur = nothing, options...)
+    if isnothing(schur)
+        direction = get(options, :direction, NT())
+        algorithm = get(options, :algorithm, nothing)
+        if algorithm isa PrimalDual
+            direction = algorithm.direction
+        end
+        schur = if algorithm isa DualCentering
+            DenseCholesky()
+        else
+            direction isa NT ? RootKKT() : AugmentedKKT()
+        end
+    end
+    if schur isa Union{AugmentedKKT,RootKKT}
+        data = model.data
+        C, d, _, _ = scalar_block_bounds(model)
+        dual =
+            LRO.DualModel(data.C, data.A, data.b, SparseArrays.sparsevec(d), C, data.msizes)
+        return MadSDPSolver(dual; schur, native_model = model, options...)
+    end
+    return MadSDPSolver(LRO.dual_model(model); schur, options...)
 end

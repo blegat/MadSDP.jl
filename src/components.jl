@@ -301,3 +301,14 @@ MadSDPSolver(model; schur = QRSchur(),
 ```
 """
 struct QRSchur <: AbstractSchurSolver end
+
+"""
+    AugmentedKKT()
+
+Sparse augmented Newton system using MadNLP's linear solver. Equality rows
+remain in the KKT system and do not contribute to the barrier.
+"""
+struct AugmentedKKT <: AbstractSchurSolver end
+
+"Square-root augmented KKT system with NT cone scaling."
+struct RootKKT <: AbstractSchurSolver end

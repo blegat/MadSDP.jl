@@ -39,3 +39,6 @@ function factorize!(sys::SchurSystem)
 end
 
 schur_solve!(sys::SchurSystem, rhs) = solve_inplace!(sys, rhs)
+
+schur_workspace(component::AbstractSchurSolver, T, n, model) =
+    schur_workspace(component, T, n)

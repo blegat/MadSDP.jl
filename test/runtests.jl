@@ -259,3 +259,7 @@ end
 include("qr_schur.jl")
 
 include("primal_model.jl")
+
+include("bounded_constraints.jl")
+
+include("nt_scaling.jl")

@@ -66,6 +66,7 @@ function _take_step!(solver::MadSDPSolver{T}, α::T, β::T) where {T}
         @. solver.x += α * solver.delx
         @. solver.z += β * solver.delz
     end
+    equality_step!(solver.schur, α)
     solver.iter += 1
     update_residuals!(solver)
     return
@@ -128,7 +129,9 @@ function update_termination!(solver::MadSDPSolver{T}, ::PrimalDual) where {T}
     solver.inf_compl = abs(pobj - dobj) / max(T(1), abs(pobj) + abs(dobj))
     converged = max(solver.inf_pr, solver.inf_du, solver.inf_compl) <= solver.opt.tol
     _update_status!(solver, converged)
-    if solver.status == MadNLP.REGULAR && solver.mu < solver.opt.mu_min
+    if solver.status == MadNLP.REGULAR &&
+       _barrier_dim(solver) > 0 &&
+       solver.mu < solver.opt.mu_min
         solver.status = MadNLP.SEARCH_DIRECTION_BECOMES_TOO_SMALL
     end
     return
