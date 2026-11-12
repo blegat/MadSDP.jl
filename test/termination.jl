@@ -8,7 +8,8 @@ import MadSDP
 
 function scalar_solver()
     one = sparse(ones(1, 1))
-    model = LRO.Model([one], reshape([one], 1, 1), [1.0], spzeros(0), spzeros(1, 0), [1])
+    model =
+        LRO.DualModel([one], reshape([one], 1, 1), [1.0], spzeros(0), spzeros(1, 0), [1])
     return MadSDP.MadSDPSolver(model)
 end
 

@@ -29,7 +29,7 @@ end
 function lro_model(L)
     n = size(L, 1)
     A = [sparse([j], [j], [1.0], n, n) for _ = 1:1, j = 1:n]
-    return LRO.Model(
+    return LRO.DualModel(
         [sparse(-L)],
         A,
         ones(n),

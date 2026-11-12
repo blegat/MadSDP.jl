@@ -10,7 +10,7 @@ function example(; scalars = 0, T = Float64)
     A = [sparse(T[i == j == k for i = 1:3, j = 1:3]) for _ = 1:1, k = 1:3]
     d = sparse(ones(T, scalars))
     L = sparse(reshape(T.(1:3scalars), 3, scalars))
-    return LRO.Model([C], A, ones(T, 3), d, L, [3])
+    return LRO.DualModel([C], A, ones(T, 3), d, L, [3])
 end
 
 @testset "QR Newton directions" begin
@@ -69,7 +69,7 @@ end
     for model in (
         example(),
         example(; scalars = 2),
-        LRO.Model(
+        LRO.DualModel(
             SparseMatrixCSC{Float64,Int}[],
             Matrix{SparseMatrixCSC{Float64,Int}}(undef, 0, 1),
             [1.0],
@@ -106,7 +106,7 @@ end
         schur = MadSDP.QRSchur(),
     )
     # An unconstrained multiplier gives a zero column of the weighted Jacobian.
-    model = LRO.Model(
+    model = LRO.DualModel(
         [sparse(ones(1, 1))],
         reshape([spzeros(1, 1)], 1, 1),
         [0.0],
@@ -124,7 +124,7 @@ end
         (1, [ones(1, 1), ones(1, 1)]),
         (2, [Matrix(Diagonal([1.0, 0.0])), Matrix(Diagonal([1.0, 0.0]))]),
     )
-        model = LRO.Model(
+        model = LRO.DualModel(
             [sparse(Matrix(1.0I, d, d))],
             reshape(sparse.(matrices), 1, 2),
             ones(2),
@@ -157,15 +157,15 @@ end
 
 @testset "Schur workspace policy" begin
     model = example(; scalars = 2)
-    full = LRO.BufferedModelForSchur(model, 8)
-    lean = LRO.BufferedModelForSchur(model, 8; schur = false)
+    full = LRO.BufferedDualModel(model, 8)
+    lean = LRO.BufferedDualModel(model, 8; schur = false)
     for input in (model, full, lean),
         schur in (MadSDP.QRSchur(), MadSDP.DenseCholesky(), MadSDP.MadNLPSchur())
 
         solver = MadSDP.MadSDPSolver(input; schur, step = MadSDP.CholeskyBacktrack())
         @test solver.model.model === model
         @test isnothing(solver.model.schur_buffer) == (schur isa MadSDP.QRSchur)
-        if input isa LRO.BufferedModelForSchur
+        if input isa LRO.BufferedDualModel
             @test solver.model.jprod_buffer === input.jprod_buffer
             @test solver.model.jtprod_buffer === input.jtprod_buffer
         end

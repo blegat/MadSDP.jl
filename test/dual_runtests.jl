@@ -21,7 +21,7 @@ function build_sdp_dual(
     end
     d_lin = SparseVector{T,Int64}(0, Int64[], T[])
     C_lin = SparseMatrixCSC{T,Int64}(m, 0, Int64[1], Int64[], T[])
-    return LRO.Model([sparse(C)], Amat, b, d_lin, C_lin, [n])
+    return LRO.DualModel([sparse(C)], Amat, b, d_lin, C_lin, [n])
 end
 
 function solve_dual(model; kws...)
@@ -126,7 +126,8 @@ end
     A1 = reshape([1.0], 1, 1)
     d_lin = SparseVector{Float64,Int64}(1, Int64[1], Float64[2.0])
     C_lin = SparseMatrixCSC{Float64,Int64}(sparse(Float64[1 0;][:, 1:1]))
-    model = LRO.Model([sparse(Cmat)], reshape([sparse(A1)], 1, 1), [1.0], d_lin, C_lin, [1])
+    model =
+        LRO.DualModel([sparse(Cmat)], reshape([sparse(A1)], 1, 1), [1.0], d_lin, C_lin, [1])
     @test_throws ErrorException MadSDPSolver(model; algorithm = DualCentering())
 end
 

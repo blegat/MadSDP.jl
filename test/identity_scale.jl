@@ -9,7 +9,7 @@ function example(; scalars = 0, T = Float64)
     A = [sparse(T[i == j == k for i = 1:3, j = 1:3]) for _ = 1:1, k = 1:3]
     d = sparse(ones(T, scalars))
     L = sparse(reshape(T.(1:3scalars), 3, scalars))
-    return LRO.Model([C], A, ones(T, 3), d, L, [3])
+    return LRO.DualModel([C], A, ones(T, 3), d, L, [3])
 end
 
 @testset "Explicit identity scale" begin

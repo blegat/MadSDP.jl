@@ -296,7 +296,8 @@ independent constraints. Unlike the dense Schur solvers, this component
 allocates while assembling and factoring the sparse matrix. It does not
 use `regularize_schur`. For example:
 ```julia
-MadSDPSolver(model; schur = QRSchur(), step = CholeskyBacktrack())
+MadSDPSolver(model; schur = QRSchur(),
+    initial_point = ScaledIdentity(10.0), step = CholeskyBacktrack())
 ```
 """
 struct QRSchur <: AbstractSchurSolver end

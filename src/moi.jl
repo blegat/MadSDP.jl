@@ -6,7 +6,7 @@
 #   * wrap our IPM in a `SolverCore.AbstractOptimizationSolver` exposing
 #     `.stats` of type `SolverCore.GenericExecutionStats`;
 #   * implement `SolverCore.solve!` so the LRO optimiser can drive us;
-#   * implement `MOI.get` for `LRO.Solution` (primal X / x) and `MOI.SolverName`.
+#   * implement `MOI.get` for `LRO.DualSolution` (primal X / x) and `MOI.SolverName`.
 #
 # Then `MadSDP.Optimizer()` returns a pre-configured `LRO.Optimizer`.
 
@@ -45,7 +45,8 @@ mutable struct Solver{T,M} <: SolverCore.AbstractOptimizationSolver
     stats::SolverCore.GenericExecutionStats{T,Vector{T},Vector{T},Any}
 end
 
-function Solver(model::LRO.AbstractModel{T}; kws...) where {T}
+function Solver(src::Union{LRO.Model{T},LRO.AbstractDualModel{T}}; kws...) where {T}
+    model = LRO.primal_model(src)
     stats = SolverCore.GenericExecutionStats(model)
     return Solver{T,typeof(model)}(model, nothing, stats)
 end
@@ -56,25 +57,30 @@ function SolverCore.solve!(
     verbose::Int = 1,
     kws...,
 ) where {T}
-    s.inner = MadSDPSolver(s.model; kws...)
+    s.inner = MadSDPSolver(LRO.dual_model(s.model); kws...)
     solve!(s.inner; verbose = verbose > 0)
     # Populate the stats fields LRO.Optimizer reads from.
     stats = s.stats
     SolverCore.set_status!(stats, _solvercore_status(s.inner.status))
-    SolverCore.set_objective!(stats, primal_objective(s.inner))
-    SolverCore.set_solver_specific!(stats, :dual_objective, dual_objective(s.inner))
-    # `multipliers` holds the LRO `y` (== MOI variable primals after dualisation).
-    SolverCore.set_constraint_multipliers!(stats, copy(s.inner.y))
-    SolverCore.set_residuals!(stats, s.inner.inf_pr, s.inner.inf_du)
+    SolverCore.set_objective!(stats, NLPModels.obj(s.model, s.inner.y))
+    SolverCore.set_solver_specific!(stats, :dual_objective, -primal_objective(s.inner))
+    SolverCore.set_solution!(stats, s.inner.y)
+    multipliers = LRO.VectorizedConeVector(stats.multipliers, s.model.dim)
+    multipliers[LRO.ScalarIndex] .= -s.inner.x
+    for (i, block) in enumerate(s.inner.blocks)
+        multipliers[LRO.MatrixIndex(i)] .= -block.X
+    end
+    SolverCore.set_constraint_multipliers!(stats, stats.multipliers)
+    SolverCore.set_residuals!(stats, s.inner.inf_du, s.inner.inf_pr)
     SolverCore.set_iter!(stats, s.inner.iter)
     SolverCore.set_time!(stats, time() - s.inner.start_time)
     return stats
 end
 
-# Primal `(x, X)` exposed as an LRO `ShapedSolution` so the MOI wrapper can
+# Cone multipliers exposed as an LRO `ShapedConeVector` so the MOI wrapper can
 # index it with `sol[ScalarIndex]` / `sol[MatrixIndex(i)]`.
-function MOI.get(s::Solver, ::LRO.Solution)
-    return LRO.ShapedSolution(copy(s.inner.x), [copy(b.X) for b in s.inner.blocks])
+function MOI.get(s::Solver, ::LRO.DualSolution)
+    return LRO.VectorizedConeVector(-s.stats.multipliers, s.model.dim)
 end
 
 MOI.get(::Solver, ::MOI.SolverName) = "MadSDP"
