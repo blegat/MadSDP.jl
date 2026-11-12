@@ -210,7 +210,7 @@ function _set_dual_slacks!(solver::MadSDPSolver)
 end
 
 # Initial point : X = S = β I per block,  y = 0,  x = z = β ones.
-function initial_point!(solver::MadSDPSolver{T}, ::ScaledIdentity) where {T}
+function initial_point!(solver::MadSDPSolver{T}, p::ScaledIdentity) where {T}
     model = solver.model
     inner = _inner(model)
     bscale = LinearAlgebra.norm(LRO.cons_constant(model), Inf)
@@ -218,10 +218,14 @@ function initial_point!(solver::MadSDPSolver{T}, ::ScaledIdentity) where {T}
     if solver.n_scalar > 0
         cscale = max(cscale, LinearAlgebra.norm(inner.d_lin, Inf))
     end
-    β = max(
-        T(10),
-        T(sqrt(max(bscale, one(T)) * max(cscale, one(T)))) * sqrt(T(_barrier_dim(solver))),
-    )
+    β = if isnothing(p.scale)
+        max(
+            T(10),
+            sqrt(max(bscale, one(T)) * max(cscale, one(T))) * sqrt(T(_barrier_dim(solver))),
+        )
+    else
+        T(p.scale)
+    end
     for b in solver.blocks
         copyto!(b.X, β * LinearAlgebra.I)
         copyto!(b.S, β * LinearAlgebra.I)

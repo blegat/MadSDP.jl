@@ -200,10 +200,21 @@ abstract type AbstractInitialPoint end
 
 """
     ScaledIdentity()
+    ScaledIdentity(β)
 
-`X = S = β I` and `y = 0` with `β` scaled from the norms of the data.
+`X = S = β I`, `x = z = β` and `y = 0`. With no argument, choose `β`
+from the norms of the data. An explicit scale must be finite and positive.
 """
-struct ScaledIdentity <: AbstractInitialPoint end
+struct ScaledIdentity{T} <: AbstractInitialPoint
+    scale::T
+    ScaledIdentity() = new{Nothing}(nothing)
+    function ScaledIdentity(scale::T) where {T<:Real}
+        if !isfinite(scale) || scale <= 0
+            throw(ArgumentError("The identity scale must be finite and positive."))
+        end
+        return new{T}(scale)
+    end
+end
 
 """
     DualShift(initial_shift = 1.0, max_shift = 1e10)
