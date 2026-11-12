@@ -85,16 +85,14 @@ end
 
 # Mehrotra correction in the scaled space where `G⁻¹ X G⁻ᵀ = Gᵀ S G = Σ`:
 # `RNT[p, q] = -(G⁻¹ ΔX ΔS G + Gᵀ ΔS ΔX G⁻ᵀ)[p, q] / (Σ[p] + Σ[q])` and
-# `corr = G RNT Gᵀ`.
+# `corr = G RNT Gᵀ`. As `ΔX` and `ΔS` are symmetric, the second term is the
+# transpose of the first one.
 function correction!(corr, ws::NTWorkspace, b::SDPBlock)
     LinearAlgebra.mul!(ws.tmp, ws.Gi, b.work.delX)
     LinearAlgebra.mul!(ws.RNT, ws.tmp, b.work.delS)
     LinearAlgebra.mul!(ws.M, ws.RNT, ws.G)
-    LinearAlgebra.mul!(ws.tmp, ws.G', b.work.delS)
-    LinearAlgebra.mul!(ws.RNT, ws.tmp, b.work.delX)
-    LinearAlgebra.mul!(ws.tmp, ws.RNT, ws.Gi')
     @inbounds for q in axes(ws.RNT, 2), p in axes(ws.RNT, 1)
-        ws.RNT[p, q] = -(ws.M[p, q] + ws.tmp[p, q]) / (ws.D[p] + ws.D[q])
+        ws.RNT[p, q] = -(ws.M[p, q] + ws.M[q, p]) / (ws.D[p] + ws.D[q])
     end
     LinearAlgebra.mul!(ws.tmp, ws.G, ws.RNT)
     LinearAlgebra.mul!(corr, ws.tmp, ws.G')

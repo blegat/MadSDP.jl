@@ -85,6 +85,12 @@ end
 
 # Cholesky factor of `M` in the lower triangle of `L`, the upper triangle
 # being zero. Returns `false` if `M` is not positive definite.
+#
+# The Cholesky factor of a sparse matrix has entries that decay exponentially
+# away from its sparsity pattern. When some of them are subnormal, the matrix
+# products of the NT scaling are up to 100 times slower (e.g., maxG11). The
+# entries below `eps^2` times the largest diagonal entry do not change these
+# products in floating-point arithmetic so they are set to zero.
 function _cholesky_factor!(L::Matrix{T}, M::Matrix{T}) where {T}
     copyto!(L, M)
     _symmetrize!(L)
@@ -92,8 +98,16 @@ function _cholesky_factor!(L::Matrix{T}, M::Matrix{T}) where {T}
     if !LinearAlgebra.issuccess(F)
         return false
     end
-    @inbounds for j in axes(L, 2), i = 1:(j-1)
-        L[i, j] = zero(T)
+    tol = eps(T)^2 * maximum(i -> abs(L[i, i]), axes(L, 1); init = zero(T))
+    @inbounds for j in axes(L, 2)
+        for i = 1:(j-1)
+            L[i, j] = zero(T)
+        end
+        for i = (j+1):size(L, 1)
+            if abs(L[i, j]) < tol
+                L[i, j] = zero(T)
+            end
+        end
     end
     return true
 end
