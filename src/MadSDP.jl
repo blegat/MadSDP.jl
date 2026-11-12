@@ -10,7 +10,7 @@ import LowRankOpt as LRO
 export MadSDPSolver, MadSDPOptions, madsdp, solve!
 export PrimalDual, DualCentering
 export NT, HKM, EigenStep, CholeskyBacktrack, Mehrotra, AdaptiveMu
-export ScaledIdentity, InitialPoint, DualShift, DenseCholesky, MadNLPSchur
+export ScaledIdentity, InitialPoint, DualShift, DenseCholesky, MadNLPSchur, QRSchur
 
 include("options.jl")
 include("kkt.jl")
@@ -21,6 +21,7 @@ include("schur_solvers.jl")
 include("step.jl")
 include("solver.jl")
 include("primal_dual.jl")
+include("qr_schur.jl")
 include("dual_centering.jl")
 include("moi.jl")
 

@@ -104,6 +104,7 @@ function MadSDPSolver(
         error("MadSDP: model has no variables.")
     end
     check_model(algorithm, model)
+    check_schur(schur, algorithm)
     B = typeof(SDPBlock{T}(algorithm, 1))
     blocks = B[
         SDPBlock{T}(algorithm, LRO.side_dimension(model, LRO.MatrixIndex(i))) for
@@ -287,9 +288,13 @@ function initialize!(solver::MadSDPSolver)
     return
 end
 
-function _factorize_schur!(solver::MadSDPSolver{T}) where {T}
+function _factorize_schur!(solver::MadSDPSolver)
+    return factorize_schur!(solver.schur, solver)
+end
+
+function factorize_schur!(workspace, solver::MadSDPSolver{T}) where {T}
     opt = solver.opt
-    H = solver.schur.H
+    H = workspace.H
     reg = opt.regularize_schur
     for _ = 1:(opt.max_schur_reg)
         LRO.schur_complement!(solver.model, solver.L, solver.R, H)
@@ -298,7 +303,7 @@ function _factorize_schur!(solver::MadSDPSolver{T}) where {T}
                 H[i, i] += reg
             end
         end
-        factorize!(solver.schur) && return true
+        factorize!(workspace) && return true
         reg = iszero(reg) ? T(1e-12) : 10 * reg
     end
     return false
