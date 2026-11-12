@@ -7,6 +7,7 @@ import MadNLP
 using MadSDP
 
 include("blocks.jl")
+include("termination.jl")
 
 primal_obj(solver) = MadSDP.primal_objective(solver)
 

@@ -16,6 +16,7 @@ import MathOptInterface as MOI
 const MOI_STATUS = Dict(
     MadNLP.SOLVE_SUCCEEDED => :first_order,
     MadNLP.SOLVED_TO_ACCEPTABLE_LEVEL => :acceptable,
+    MadNLP.SEARCH_DIRECTION_BECOMES_TOO_SMALL => :small_step,
     MadNLP.MAXIMUM_ITERATIONS_EXCEEDED => :max_iter,
     MadNLP.MAXIMUM_WALLTIME_EXCEEDED => :max_time,
     MadNLP.INFEASIBLE_PROBLEM_DETECTED => :infeasible,
