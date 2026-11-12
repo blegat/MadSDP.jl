@@ -254,8 +254,10 @@ end
     AbstractSchurSolver
 
 Factorization of the Schur complement. A subtype `S` implements
-`schur_workspace(S, T, m)`. By default, the driver assembles the normal
-matrix in `workspace.H`, calls `factorize!(workspace) -> Bool`, and solves
+`schur_workspace(S, T, m)`. Set `needs_schur_buffer(S) = false` for a
+component that does not use LRO Schur-assembly workspaces. By default,
+the driver assembles the normal matrix in `workspace.H`, calls
+`factorize!(workspace) -> Bool`, and solves
 with `schur_solve!(workspace, rhs)`.
 
 A component that avoids the normal matrix can instead implement

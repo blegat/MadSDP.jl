@@ -2,6 +2,8 @@
 
 check_schur(::AbstractSchurSolver, ::AbstractAlgorithm) = nothing
 
+needs_schur_buffer(::AbstractSchurSolver) = true
+
 mutable struct DenseCholeskyWorkspace{T}
     H::Matrix{T}
     F::LinearAlgebra.Cholesky{T,Matrix{T}}
