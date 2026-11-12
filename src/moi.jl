@@ -57,8 +57,10 @@ function SolverCore.solve!(
     verbose::Int = 1,
     kws...,
 ) where {T}
+    SolverCore.set_solver_specific!(s.stats, :dual_certificate, false)
+    SolverCore.set_solver_specific!(s.stats, :primal_certificate, false)
     if iszero(s.model.meta.nvar)
-        return _constant_problem!(s)
+        return _constant_problem!(s; tol = get(kws, :tol, T(1e-7)))
     end
     s.inner = MadSDPSolver(s.model; kws...)
     solve!(s.inner; verbose = verbose > 0)
@@ -68,23 +70,30 @@ function SolverCore.solve!(
     SolverCore.set_objective!(stats, NLPModels.obj(s.model, s.inner.y))
     SolverCore.set_solver_specific!(stats, :dual_objective, -primal_objective(s.inner))
     SolverCore.set_solution!(stats, s.inner.y)
-    multipliers = LRO.VectorizedConeVector(stats.multipliers, s.model.dim)
-    if s.inner.schur isa Union{AugmentedKKTWorkspace,RootKKTWorkspace}
-        ws = equality_block(s.inner.schur)
-        fill!(multipliers, zero(T))
-        _, _, rows, signs = scalar_block_bounds(s.model)
-        for k in eachindex(rows)
-            multipliers[LRO.ScalarIndex][rows[k]] += signs[k] * s.inner.x[k]
-        end
-        multipliers[LRO.ScalarIndex][ws.equalities] .= ws.eta
-        for (i, block) in enumerate(s.inner.blocks)
-            multipliers[LRO.MatrixIndex(i)] .= -block.X
-        end
-    else
-        cone = LRO.ShapedConeVector(s.inner.x, [b.X for b in s.inner.blocks])
-        copyto!(multipliers, -LRO.cone_multipliers(s.model, cone))
-    end
+    _constraint_multipliers!(s)
     SolverCore.set_constraint_multipliers!(stats, stats.multipliers)
+    if stats.status ∉ (:first_order, :acceptable) &&
+       LRO.constraint_violation(s.model, stats.solution) > s.inner.opt.tol
+        scale = LRO.infeasibility_certificate(s.model, -stats.multipliers)
+        if !isnothing(scale)
+            stats.multipliers ./= scale
+            SolverCore.set_status!(stats, :infeasible)
+            SolverCore.set_solver_specific!(stats, :dual_certificate, true)
+            SolverCore.set_solver_specific!(stats, :dual_objective, one(T))
+        end
+    end
+    if stats.status ∉ (:first_order, :acceptable, :infeasible)
+        for candidate in (stats.solution, s.inner.dely)
+            scale = LRO.recession_certificate(s.model, candidate)
+            if !isnothing(scale)
+                SolverCore.set_solution!(stats, candidate/scale)
+                SolverCore.set_objective!(stats, -one(T))
+                SolverCore.set_status!(stats, :unbounded)
+                SolverCore.set_solver_specific!(stats, :primal_certificate, true)
+                break
+            end
+        end
+    end
     SolverCore.set_residuals!(stats, s.inner.inf_du, s.inner.inf_pr)
     SolverCore.set_iter!(stats, s.inner.iter)
     SolverCore.set_time!(stats, time() - s.inner.start_time)
@@ -112,14 +121,9 @@ function Optimizer()
     return opt
 end
 
-function _constant_problem!(s::Solver{T}) where {T}
+function _constant_problem!(s::Solver{T}; tol = T(1e-7)) where {T}
     model, stats = s.model, s.stats
-    feasible = all(model.meta.lcon .<= model.constant .<= model.meta.ucon)
-    cone = LRO.VectorizedConeVector(model.constant, model.dim)
-    for idx in LRO.matrix_indices(model)
-        feasible &=
-            LinearAlgebra.eigmin(LinearAlgebra.Symmetric(cone[idx])) >= -sqrt(eps(T))
-    end
+    feasible = LRO.constraint_violation(model, T[]) <= tol
     SolverCore.set_status!(stats, feasible ? :first_order : :infeasible)
     SolverCore.set_solution!(stats, T[])
     SolverCore.set_objective!(stats, model.objective_constant)
@@ -129,4 +133,30 @@ function _constant_problem!(s::Solver{T}) where {T}
     SolverCore.set_iter!(stats, 0)
     SolverCore.set_time!(stats, 0.0)
     return stats
+end
+
+function _constraint_multipliers!(s::Solver{T}) where {T}
+    multipliers = LRO.VectorizedConeVector(s.stats.multipliers, s.model.dim)
+    if s.inner.schur isa Union{AugmentedKKTWorkspace,RootKKTWorkspace} &&
+       equality_block(s.inner.schur).model === s.model
+        ws = equality_block(s.inner.schur)
+        fill!(multipliers, zero(T))
+        _, _, rows, signs = scalar_block_bounds(s.model)
+        for k in eachindex(rows)
+            multipliers[LRO.ScalarIndex][rows[k]] += signs[k] * s.inner.x[k]
+        end
+        multipliers[LRO.ScalarIndex][ws.equalities] .= ws.eta
+        if s.inner.schur isa RootKKTWorkspace
+            for (i, block) in enumerate(s.inner.schur.soc)
+                multipliers[LRO.SOCIndex(i)] .= -block.X
+            end
+        end
+        for (i, block) in enumerate(s.inner.blocks)
+            multipliers[LRO.MatrixIndex(i)] .= -block.X
+        end
+    else
+        cone = LRO.ShapedConeVector(s.inner.x, [b.X for b in s.inner.blocks])
+        copyto!(multipliers, -LRO.cone_multipliers(s.model, cone))
+    end
+    return
 end

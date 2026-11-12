@@ -1,8 +1,8 @@
 # These hooks keep equality multipliers separate from cone complementarity.
-equality_objective(_) = 0
-equality_infeasibility(_) = 0
-equality_residuals!(_, solver) = nothing
-equality_step!(_, alpha) = nothing
+additional_objective(_) = 0
+additional_infeasibility(_) = 0
+additional_residuals!(_, solver) = nothing
+additional_step!(_, alpha, beta) = nothing
 
 mutable struct AugmentedKKTWorkspace{T,M}
     model::M
@@ -195,22 +195,22 @@ function solve_directions!(
     return
 end
 
-function equality_residuals!(ws::AugmentedKKTWorkspace, solver)
+function additional_residuals!(ws::AugmentedKKTWorkspace, solver)
     LinearAlgebra.mul!(solver.Rp, ws.E', ws.eta, -1, true)
     ws.residual .= ws.target
     LinearAlgebra.mul!(ws.residual, ws.E, solver.y, -1, true)
     return
 end
-function equality_step!(ws::AugmentedKKTWorkspace, alpha)
+function additional_step!(ws::AugmentedKKTWorkspace, alpha, beta)
     ws.eta .+= alpha .* ws.delta_eta
     return
 end
-equality_objective(ws::AugmentedKKTWorkspace) = LinearAlgebra.dot(ws.target, ws.eta)
-equality_infeasibility(ws::AugmentedKKTWorkspace) =
+additional_objective(ws::AugmentedKKTWorkspace) = LinearAlgebra.dot(ws.target, ws.eta)
+additional_infeasibility(ws::AugmentedKKTWorkspace) =
     LinearAlgebra.norm(ws.residual, Inf)/max(1, LinearAlgebra.norm(ws.target, Inf))
 
-initialize_scalar_bounds!(_, solver) = nothing
-function initialize_scalar_bounds!(ws::AugmentedKKTWorkspace{T}, solver) where {T}
+initialize_constraints!(_, solver) = nothing
+function initialize_constraints!(ws::AugmentedKKTWorkspace{T}, solver) where {T}
     # All scalar cone slacks are independent at the infeasible starting point.
     # Initialize their positive bounds with the same routine MadNLP uses.
     MadNLP.initialize_variables!(
@@ -223,3 +223,10 @@ function initialize_scalar_bounds!(ws::AugmentedKKTWorkspace{T}, solver) where {
     fill!(ws.eta, zero(T))
     return
 end
+
+additional_barrier_degree(_) = 0
+additional_complementarity(_) = 0
+additional_affine_complementarity(_, alpha, beta) = 0
+prepare_additional_cones!(_, solver) = true
+additional_correction!(_) = nothing
+additional_step_lengths(_, alpha, beta, tau) = (alpha, beta)

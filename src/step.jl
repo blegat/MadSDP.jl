@@ -25,7 +25,7 @@ function update_residuals!(solver)
     @inbounds for j in eachindex(solver.Rp)
         solver.Rp[j] = LRO.cons_constant(model)[j] - solver.Rp[j]
     end
-    equality_residuals!(solver.schur, solver)
+    additional_residuals!(solver.schur, solver)
     # Matrix dual residual.
     for (i, b) in enumerate(solver.blocks)
         AT_y = LRO.unsafe_jtprod(model, solver.y, LRO.MatrixIndex(i))
@@ -133,6 +133,7 @@ function correction!(solver)
     @inbounds for k = 1:(solver.n_scalar)
         solver.corr_lin[k] = -solver.delx[k] * solver.delz[k] * solver.zinv[k]
     end
+    additional_correction!(solver.schur)
     return
 end
 
@@ -195,7 +196,7 @@ function step_lengths(s::EigenStep, solver)
         α = min(α, T(s.τ) * _max_scalar_step(solver.x, solver.delx))
         β = min(β, T(s.τ) * _max_scalar_step(solver.z, solver.delz))
     end
-    return α, β
+    return additional_step_lengths(solver.schur, α, β, s.τ)
 end
 
 step_workspace(::CholeskyBacktrack, ::Type, _) = nothing
@@ -225,7 +226,7 @@ end
 function step_lengths(s::CholeskyBacktrack, solver)
     α = _backtrack(s, solver.blocks, b -> b.X, b -> b.work.delX, solver.x, solver.delx)
     β = _backtrack(s, solver.blocks, b -> b.S, b -> b.work.delS, solver.z, solver.delz)
-    return α, β
+    return additional_step_lengths(solver.schur, α, β, s.boundary)
 end
 
 # Complementarity at the trial point `(X + α ΔX, S + β ΔS)`.
@@ -240,5 +241,6 @@ function affine_complementarity(solver, α::T, β::T) where {T}
     @inbounds for k = 1:(solver.n_scalar)
         s += (solver.x[k] + α * solver.delx[k]) * (solver.z[k] + β * solver.delz[k])
     end
-    return s / max(_barrier_dim(solver), 1)
+    return (s+additional_affine_complementarity(solver.schur, α, β)) /
+           max(_barrier_dim(solver), 1)
 end

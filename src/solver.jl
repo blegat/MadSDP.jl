@@ -170,7 +170,7 @@ function primal_objective(solver::MadSDPSolver{T}) where {T}
     if solver.n_scalar > 0
         s += LinearAlgebra.dot(LRO.grad(solver.model, LRO.ScalarIndex), solver.x)
     end
-    return s + equality_objective(solver.schur)
+    return s + additional_objective(solver.schur)
 end
 
 function dual_objective(solver::MadSDPSolver{T}) where {T}
@@ -178,7 +178,8 @@ function dual_objective(solver::MadSDPSolver{T}) where {T}
 end
 
 # Barrier parameter ν = Σ n_i + n_scalar.
-_barrier_dim(solver) = total_dim(solver.blocks) + solver.n_scalar
+_barrier_dim(solver) =
+    total_dim(solver.blocks) + solver.n_scalar + additional_barrier_degree(solver.schur)
 
 # Σ tr(X_i S_i) + dot(x, z).
 function total_complementarity(solver::MadSDPSolver{T}) where {T}
@@ -186,7 +187,7 @@ function total_complementarity(solver::MadSDPSolver{T}) where {T}
     if solver.n_scalar > 0
         s += LinearAlgebra.dot(solver.x, solver.z)
     end
-    return s
+    return s + additional_complementarity(solver.schur)
 end
 
 # `out = C_i - A*_i(y)`
@@ -285,7 +286,7 @@ end
 
 function initialize!(solver::MadSDPSolver)
     initial_point!(solver, solver.initial_point)
-    initialize_scalar_bounds!(solver.schur, solver)
+    initialize_constraints!(solver.schur, solver)
     solver.iter = 0
     solver.status = MadNLP.REGULAR
     solver.start_time = time()
@@ -330,7 +331,7 @@ function _update_infeasibilities!(solver::MadSDPSolver{T}) where {T}
         Rd_norm = max(Rd_norm, LinearAlgebra.norm(solver.Rd_lin, Inf))
         cnorm = max(cnorm, LinearAlgebra.norm(_inner(solver.model).d_lin, Inf))
     end
-    solver.inf_du = max(Rd_norm / max(T(1), cnorm), equality_infeasibility(solver.schur))
+    solver.inf_du = max(Rd_norm / max(T(1), cnorm), additional_infeasibility(solver.schur))
     return
 end
 
@@ -416,6 +417,9 @@ function MadSDPSolver(model::LRO.Model; schur = nothing, options...)
         else
             direction isa NT ? RootKKT() : AugmentedKKT()
         end
+    end
+    if schur isa AugmentedKKT && LRO.num_second_order_cones(model) > 0
+        return MadSDPSolver(LRO.dual_model(model); schur, options...)
     end
     if schur isa Union{AugmentedKKT,RootKKT}
         data = model.data

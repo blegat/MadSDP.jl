@@ -1,6 +1,7 @@
 # Augment with scaled cone directions rather than forming normal equations.
 mutable struct RootKKTWorkspace{T,E}
     equality::E
+    soc::Vector{SOCBlock{T}}
     entries::Vector{Tuple{Vector{Int},Matrix{T}}}
     matrix::SparseArrays.SparseMatrixCSC{T,Int32}
     positions::Dict{Tuple{Int,Int},Int}
@@ -21,6 +22,7 @@ function schur_workspace(::RootKKT, ::Type{T}, n, model) where {T}
     eq = schur_workspace(AugmentedKKT(), T, n, model)
     return RootKKTWorkspace(
         eq,
+        SOCBlock{T}[SOCBlock(eq.model, idx) for idx in LRO.second_order_indices(eq.model)],
         Tuple{Vector{Int},Matrix{T}}[],
         SparseArrays.spzeros(T, Int32, 0, 0),
         Dict{Tuple{Int,Int},Int}(),
@@ -50,6 +52,13 @@ function _initialize_root_kkt!(ws::RootKKTWorkspace{T}, solver) where {T}
             push!(pairs, (row, j))
         end
         offset += k
+    end
+    for b in ws.soc
+        nrows = length(b.X)
+        for j in b.columns, row = (offset+1):(offset+nrows)
+            push!(pairs, (row, j))
+        end
+        offset += nrows
     end
     C = _inner(solver.model).C_lin
     for k in axes(C, 2), p in SparseArrays.nzrange(C, k)
@@ -102,6 +111,14 @@ function factorize_schur!(ws::RootKKTWorkspace{T}, solver::MadSDPSolver) where {
             end
         end
         offset += b.n*(b.n+1)÷2
+    end
+    for b in ws.soc
+        for (k, j) in enumerate(b.columns), i in eachindex(b.X)
+            value = b.weighted_A[i, k]
+            K.nzval[ws.positions[(offset+i, j)]] = value
+            ws.scale[j] += abs2(value)
+        end
+        offset += length(b.X)
     end
     C = _inner(solver.model).C_lin
     for k in axes(C, 2)
@@ -175,6 +192,19 @@ function solve_directions!(
             ws.rhs[offset] = b.buf2[p, q]*(p == q ? one(T) : sqrt(T(2)))
         end
     end
+    for b in ws.soc
+        _soc_inverse!(b.work1, b.lambda)
+        @. b.work1 = mu*b.work1-b.lambda
+        LinearAlgebra.mul!(b.work2, b.G, b.Rd)
+        b.work1 .-= b.work2
+        if corrected
+            b.work1 .+= b.correction
+        end
+        for i in eachindex(b.X)
+            ws.rhs[offset+i] = -b.work1[i]
+        end
+        offset += length(b.X)
+    end
     for k = 1:solver.n_scalar
         weight = sqrt(solver.x[k]*solver.zinv[k])
         q = mu*solver.zinv[k] - solver.x[k] - solver.x[k]*solver.zinv[k]*solver.Rd_lin[k]
@@ -211,10 +241,13 @@ function solve_directions!(
     ws.rhs .*= ws.scale
     solver.dely .= view(ws.rhs, 1:solver.m)
     ws.equality.delta_eta .= view(ws.rhs, (solver.m+1):ws.cone_offset)
-    directions!(solver, solver.dely, mu, corrected)
     # Recover the cone direction directly; avoid subtracting large matrices.
     offset = ws.cone_offset
-    for b in solver.blocks
+    for (i, b) in enumerate(solver.blocks)
+        AT = LRO.unsafe_jtprod(solver.model, solver.dely, LRO.MatrixIndex(i))
+        copyto!(b.work.delS, b.Rd)
+        _axpy_sparse_dense!(b.work.delS, -one(T), AT)
+        _symmetrize!(b.work.delS)
         for q = 1:b.n, p = 1:q
             offset += 1
             value = ws.rhs[offset]/(p == q ? one(T) : sqrt(T(2)))
@@ -224,17 +257,97 @@ function solve_directions!(
         LinearAlgebra.mul!(b.work.delX, b.buf2, b.work.dir.G')
         _symmetrize!(b.work.delX)
     end
+    for b in ws.soc
+        LinearAlgebra.mul!(b.delX, b.G, view(ws.rhs, (offset+1):(offset+length(b.X))))
+        copyto!(b.delS, b.Rd)
+        LinearAlgebra.mul!(b.delS, b.A, view(solver.dely, b.columns), -1, true)
+        offset += length(b.X)
+    end
+    LinearAlgebra.mul!(solver.delz, _inner(solver.model).C_lin', solver.dely)
+    solver.delz .= solver.Rd_lin .- solver.delz
     for k = 1:solver.n_scalar
         solver.delx[k] = sqrt(solver.x[k]*solver.zinv[k])*ws.rhs[offset+k]
     end
     return
 end
 
-equality_residuals!(ws::RootKKTWorkspace, solver) = equality_residuals!(ws.equality, solver)
-equality_step!(ws::RootKKTWorkspace, alpha) = equality_step!(ws.equality, alpha)
-equality_objective(ws::RootKKTWorkspace) = equality_objective(ws.equality)
-equality_infeasibility(ws::RootKKTWorkspace) = equality_infeasibility(ws.equality)
-initialize_scalar_bounds!(ws::RootKKTWorkspace, solver) =
-    initialize_scalar_bounds!(ws.equality, solver)
+function additional_residuals!(ws::RootKKTWorkspace, solver)
+    additional_residuals!(ws.equality, solver)
+    for b in ws.soc
+        for (k, j) in enumerate(b.columns)
+            solver.Rp[j] -= LinearAlgebra.dot(view(b.A, :, k), b.X)
+        end
+        b.Rd .= b.constant .- b.S
+        LinearAlgebra.mul!(b.Rd, b.A, view(solver.y, b.columns), -1, true)
+    end
+    return
+end
+function additional_step!(ws::RootKKTWorkspace, alpha, beta)
+    additional_step!(ws.equality, alpha, beta)
+    for b in ws.soc
+        @. b.X += alpha*b.delX
+        @. b.S += beta*b.delS
+    end
+    return
+end
+additional_objective(ws::RootKKTWorkspace{T}) where {T} =
+    additional_objective(ws.equality)+sum(
+        b -> LinearAlgebra.dot(b.constant, b.X),
+        ws.soc;
+        init = zero(T),
+    )
+function additional_infeasibility(ws::RootKKTWorkspace)
+    residual = additional_infeasibility(ws.equality)
+    for b in ws.soc
+        residual = max(
+            residual,
+            LinearAlgebra.norm(b.Rd, Inf)/max(1, LinearAlgebra.norm(b.constant, Inf)),
+        )
+    end
+    return residual
+end
+function initialize_constraints!(ws::RootKKTWorkspace{T}, solver) where {T}
+    initialize_constraints!(ws.equality, solver)
+    scale =
+        if solver.initial_point isa ScaledIdentity && !isnothing(solver.initial_point.scale)
+            T(solver.initial_point.scale)
+        else
+            one(T)
+        end
+    for b in ws.soc
+        fill!(b.X, zero(T))
+        fill!(b.S, zero(T))
+        b.X[1] = b.S[1] = scale
+    end
+    return
+end
+additional_barrier_degree(ws::RootKKTWorkspace) = length(ws.soc)
+additional_complementarity(ws::RootKKTWorkspace{T}) where {T} =
+    sum(b -> LinearAlgebra.dot(b.X, b.S), ws.soc; init = zero(T))
+function additional_affine_complementarity(ws::RootKKTWorkspace, alpha, beta)
+    result = zero(eltype(ws.rhs))
+    for b in ws.soc
+        result +=
+            LinearAlgebra.dot(b.X, b.S)+beta*LinearAlgebra.dot(b.X, b.delS)+alpha*LinearAlgebra.dot(
+                b.delX,
+                b.S,
+            )+alpha*beta*LinearAlgebra.dot(b.delX, b.delS)
+    end
+    return result
+end
+prepare_additional_cones!(ws::RootKKTWorkspace, solver) = all(prepare_soc!, ws.soc)
+function additional_correction!(ws::RootKKTWorkspace)
+    for b in ws.soc
+        soc_correction!(b)
+    end
+    return
+end
+function additional_step_lengths(ws::RootKKTWorkspace, alpha, beta, tau)
+    for b in ws.soc
+        alpha = min(alpha, tau*_soc_max_step(b.X, b.delX))
+        beta = min(beta, tau*_soc_max_step(b.S, b.delS))
+    end
+    return alpha, beta
+end
 equality_block(ws::RootKKTWorkspace) = ws.equality
 equality_block(ws::AugmentedKKTWorkspace) = ws
