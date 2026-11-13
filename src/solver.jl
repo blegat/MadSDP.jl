@@ -396,8 +396,11 @@ function solve!(solver::MadSDPSolver{T}; verbose::Bool = true) where {T}
         update_termination!(solver)
         verbose && print_iter(solver)
     end
+    finalize_algorithm!(solver, solver.algorithm)
     return solver
 end
+
+finalize_algorithm!(solver, algorithm) = nothing
 
 """
     madsdp(model::LRO.AbstractDualModel; kwargs...)

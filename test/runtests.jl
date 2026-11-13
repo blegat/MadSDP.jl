@@ -267,3 +267,5 @@ include("nt_scaling.jl")
 include("soc.jl")
 
 include("root_kkt.jl")
+
+include("homogeneous.jl")

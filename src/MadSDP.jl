@@ -9,7 +9,7 @@ import NLPModels
 import LowRankOpt as LRO
 
 export MadSDPSolver, MadSDPOptions, madsdp, solve!
-export PrimalDual, DualCentering
+export PrimalDual, DualCentering, HomogeneousPrimalDual
 export NT, HKM, EigenStep, CholeskyBacktrack, Mehrotra, AdaptiveMu
 export ScaledIdentity, InitialPoint, DualShift, DenseCholesky, MadNLPSchur, QRSchur
 export AugmentedKKT, RootKKT, SparseKKT
@@ -29,6 +29,7 @@ include("dual_centering.jl")
 include("scalar_block.jl")
 include("augmented_kkt.jl")
 include("root_kkt.jl")
+include("homogeneous.jl")
 include("moi.jl")
 
 end # module

@@ -314,10 +314,15 @@ struct AugmentedKKT <: AbstractSchurSolver end
 struct RootKKT <: AbstractSchurSolver
     linear_solver::Type
     cone_hessian::Bool
+    equilibrate::Bool
     options::NamedTuple
 end
-RootKKT(; linear_solver = MadNLP.UmfpackSolver, cone_hessian = false, options...) =
-    RootKKT(linear_solver, cone_hessian, NamedTuple(options))
+RootKKT(;
+    linear_solver = MadNLP.UmfpackSolver,
+    cone_hessian = false,
+    equilibrate = true,
+    options...,
+) = RootKKT(linear_solver, cone_hessian, equilibrate, NamedTuple(options))
 RootKKT(linear_solver::Type) = RootKKT(; linear_solver)
 
 """
@@ -334,3 +339,23 @@ struct SparseKKT <: AbstractSchurSolver
 end
 SparseKKT(; linear_solver = MadNLP.MumpsSolver, options...) =
     SparseKKT(linear_solver, NamedTuple(options))
+
+"""
+    HomogeneousPrimalDual(;direction=NT(),step=CholeskyBacktrack(),centering=Mehrotra())
+
+Homogeneous primal-dual embedding with NT cone scaling. Uses RootKKT or
+SparseKKT and shares their factorization across all predictor/corrector
+right-hand sides.
+"""
+struct HomogeneousPrimalDual{A<:PrimalDual} <: AbstractAlgorithm
+    inner::A
+end
+HomogeneousPrimalDual(;
+    direction = NT(),
+    step = CholeskyBacktrack(),
+    centering = Mehrotra(),
+) = HomogeneousPrimalDual(PrimalDual(direction, step, centering))
+cone_data_scale(_) = 1
+homogeneous_tau_direction(_) = 0
+
+homogeneous_residual_factor(_) = 1

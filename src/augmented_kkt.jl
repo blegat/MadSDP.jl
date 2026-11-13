@@ -20,6 +20,9 @@ mutable struct AugmentedKKTWorkspace{T,M}
     scale::Vector{T}
     saved_rhs::Vector{T}
     refinement::Vector{T}
+    original_E::SparseArrays.SparseMatrixCSC{T,Int}
+    original_target::Vector{T}
+    original_residual::Vector{T}
 end
 
 needs_schur_buffer(::AugmentedKKT) = false
@@ -33,6 +36,7 @@ function schur_workspace(::AugmentedKKT, ::Type{T}, n, src) where {T}
     eq = filter(i -> model.meta.lcon[i] == model.meta.ucon[i], 1:LRO.num_scalars(model))
     E = model.jacobian[eq, :]
     target = model.meta.lcon[eq] - model.constant[eq]
+    residual=copy(target)
     N = n + length(eq)
     return AugmentedKKTWorkspace(
         model,
@@ -41,7 +45,7 @@ function schur_workspace(::AugmentedKKT, ::Type{T}, n, src) where {T}
         target,
         zeros(T, length(eq)),
         zeros(T, length(eq)),
-        copy(target),
+        residual,
         Tuple{Vector{Int},Matrix{T},Matrix{T},Matrix{T}}[],
         SparseArrays.spzeros(T, Int32, N, N),
         nothing,
@@ -50,6 +54,9 @@ function schur_workspace(::AugmentedKKT, ::Type{T}, n, src) where {T}
         ones(T, N),
         zeros(T, N),
         zeros(T, N),
+        E,
+        target,
+        residual,
     )
 end
 
@@ -197,8 +204,12 @@ end
 
 function additional_residuals!(ws::AugmentedKKTWorkspace, solver)
     LinearAlgebra.mul!(solver.Rp, ws.E', ws.eta, -1, true)
-    ws.residual .= ws.target
+    ws.residual .= cone_data_scale(solver.state) .* ws.target
     LinearAlgebra.mul!(ws.residual, ws.E, solver.y, -1, true)
+    if ws.original_residual !== ws.residual
+        ws.original_residual .= cone_data_scale(solver.state) .* ws.original_target
+        LinearAlgebra.mul!(ws.original_residual, ws.original_E, solver.y, -1, true)
+    end
     return
 end
 function additional_step!(ws::AugmentedKKTWorkspace, alpha, beta)
@@ -206,10 +217,29 @@ function additional_step!(ws::AugmentedKKTWorkspace, alpha, beta)
     return
 end
 additional_objective(ws::AugmentedKKTWorkspace) = LinearAlgebra.dot(ws.target, ws.eta)
-additional_infeasibility(ws::AugmentedKKTWorkspace) = LinearAlgebra.norm(ws.residual, Inf)
+additional_infeasibility(ws::AugmentedKKTWorkspace) =
+    LinearAlgebra.norm(ws.original_residual, Inf)
 
 initialize_constraints!(_, solver) = nothing
 function initialize_constraints!(ws::AugmentedKKTWorkspace{T}, solver) where {T}
+    rows=LRO.equality_basis(ws.model; tolerance = solver.opt.tol/100)
+    if rows != ws.equalities
+        ws.equalities=rows
+        ws.E=ws.model.jacobian[rows, :]
+        ws.target=ws.model.meta.lcon[rows]-ws.model.constant[rows]
+        ws.residual=copy(ws.target)
+        ws.eta=zeros(T, length(rows))
+        ws.delta_eta=zeros(T, length(rows))
+        N=solver.m+length(rows)
+        ws.rhs=zeros(T, N)
+        ws.scale=ones(T, N)
+        ws.saved_rhs=zeros(T, N)
+        ws.refinement=zeros(T, N)
+        ws.matrix=SparseArrays.spzeros(T, Int32, N, N)
+        ws.linear_solver=nothing
+        empty!(ws.entries)
+        empty!(ws.positions)
+    end
     # All scalar cone slacks are independent at the infeasible starting point.
     # Initialize their positive bounds with the same routine MadNLP uses.
     MadNLP.initialize_variables!(

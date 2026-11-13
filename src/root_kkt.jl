@@ -39,6 +39,7 @@ mutable struct RootKKTWorkspace{T,E}
     cone_offset::Int
     regularization::T
     cone_hessian::Bool
+    equilibrate::Bool
     psd_cone_hessian::BitVector
     soc_cone_hessian::BitVector
 end
@@ -67,6 +68,7 @@ function schur_workspace(component::RootKKT, ::Type{T}, n, model) where {T}
         0,
         zero(T),
         component.cone_hessian,
+        component.equilibrate,
         BitVector(),
         BitVector(),
     )
@@ -306,6 +308,9 @@ function factorize_schur!(ws::RootKKTWorkspace{T}, solver::MadSDPSolver) where {
     for i = (solver.m+1):ws.cone_offset
         ws.scale[i] = iszero(ws.scale[i]) ? one(T) : inv(sqrt(ws.scale[i]))
     end
+    if !ws.equilibrate
+        fill!(ws.scale, one(T))
+    end
     for j in axes(K, 2), p in SparseArrays.nzrange(K, j)
         K.nzval[p] *= ws.scale[K.rowval[p]]*ws.scale[j]
     end
@@ -344,8 +349,9 @@ function solve_directions!(
     mu::T,
     corrected::Bool,
 ) where {T}
-    ws.rhs[1:solver.m] .= solver.Rp
-    ws.rhs[(solver.m+1):ws.cone_offset] .= ws.equality.residual
+    gamma=T(homogeneous_residual_factor(solver.state))
+    ws.rhs[1:solver.m] .= gamma .* solver.Rp
+    ws.rhs[(solver.m+1):ws.cone_offset] .= gamma .* ws.equality.residual
     offset = ws.cone_offset
     for (i, b) in enumerate(solver.blocks)
         dir = b.work.dir
@@ -356,7 +362,7 @@ function solve_directions!(
         end
         if solver.rd_nonzero[i]
             LinearAlgebra.mul!(b.buf, b.Rd, dir.G)
-            LinearAlgebra.mul!(b.buf2, dir.G', b.buf, one(T), one(T))
+            LinearAlgebra.mul!(b.buf2, dir.G', b.buf, gamma, one(T))
         end
         if corrected
             b.buf2 .-= dir.RNT
@@ -375,7 +381,7 @@ function solve_directions!(
         _soc_inverse!(b.work1, b.lambda)
         @. b.work1 = mu*b.work1-b.lambda
         LinearAlgebra.mul!(b.work2, b.G, b.Rd)
-        b.work1 .-= b.work2
+        b.work1 .-= gamma .* b.work2
         if corrected
             b.work1 .+= b.correction
         end
@@ -389,23 +395,22 @@ function solve_directions!(
     end
     for k = 1:solver.n_scalar
         weight = sqrt(solver.x[k]*solver.zinv[k])
-        q = mu*solver.zinv[k] - solver.x[k] - solver.x[k]*solver.zinv[k]*solver.Rd_lin[k]
+        q =
+            mu*solver.zinv[k] - solver.x[k] -
+            solver.x[k]*solver.zinv[k]*gamma*solver.Rd_lin[k]
         if corrected
             q += solver.corr_lin[k]
         end
         ws.rhs[offset+k] = -q/weight
     end
-    ws.rhs .*= ws.scale
-    copyto!(ws.saved_rhs, ws.rhs)
-    refine_root_direction!(ws, solver, ws.linear_solver)
-    ws.rhs .*= ws.scale
+    _root_linear_solve!(ws, solver, solver.state, mu, corrected)
     solver.dely .= view(ws.rhs, 1:solver.m)
     ws.equality.delta_eta .= view(ws.rhs, (solver.m+1):ws.cone_offset)
     # Recover the cone direction directly; avoid subtracting large matrices.
     offset = ws.cone_offset
     for (i, b) in enumerate(solver.blocks)
         columns, coefficients = ws.entries[i]
-        copyto!(b.work.delS, b.Rd)
+        b.work.delS .= gamma .* b.Rd
         LinearAlgebra.mul!(
             vec(b.work.delS),
             coefficients,
@@ -413,6 +418,13 @@ function solve_directions!(
             -one(T),
             one(T),
         )
+        if !iszero(homogeneous_tau_direction(solver.state))
+            _axpy_sparse_dense!(
+                b.work.delS,
+                homogeneous_tau_direction(solver.state),
+                LRO.grad(solver.model, LRO.MatrixIndex(i)),
+            )
+        end
         _symmetrize!(b.work.delS)
         for q = 1:b.n, p = 1:q
             offset += 1
@@ -438,12 +450,15 @@ function solve_directions!(
         else
             LinearAlgebra.mul!(b.delX, b.G, view(ws.rhs, (offset+1):(offset+length(b.X))))
         end
-        copyto!(b.delS, b.Rd)
+        b.delS .= gamma .* b.Rd
         LinearAlgebra.mul!(b.delS, b.A, view(solver.dely, b.columns), -1, true)
+        b.delS .+= homogeneous_tau_direction(solver.state) .* b.constant
         offset += length(b.X)
     end
     LinearAlgebra.mul!(solver.delz, _inner(solver.model).C_lin', solver.dely)
-    solver.delz .= solver.Rd_lin .- solver.delz
+    solver.delz .=
+        gamma .* solver.Rd_lin .- solver.delz .+
+        homogeneous_tau_direction(solver.state) .* _inner(solver.model).d_lin
     for k = 1:solver.n_scalar
         solver.delx[k] = sqrt(solver.x[k]*solver.zinv[k])*ws.rhs[offset+k]
     end
@@ -456,7 +471,7 @@ function additional_residuals!(ws::RootKKTWorkspace, solver)
         for (k, j) in enumerate(b.columns)
             solver.Rp[j] -= LinearAlgebra.dot(view(b.A, :, k), b.X)
         end
-        b.Rd .= b.constant .- b.S
+        b.Rd .= cone_data_scale(solver.state) .* b.constant .- b.S
         LinearAlgebra.mul!(b.Rd, b.A, view(solver.y, b.columns), -1, true)
     end
     return
@@ -484,6 +499,12 @@ function additional_infeasibility(ws::RootKKTWorkspace)
 end
 function initialize_constraints!(ws::RootKKTWorkspace{T}, solver) where {T}
     initialize_constraints!(ws.equality, solver)
+    if !isnothing(ws.linear_solver) && ws.cone_offset != solver.m+length(ws.equality.eta)
+        ws.linear_solver=nothing
+        empty!(ws.entries)
+        empty!(ws.psd_cone_hessian)
+        empty!(ws.soc_cone_hessian)
+    end
     if isnothing(ws.linear_solver)
         _initialize_root_kkt!(ws, solver)
     end
@@ -569,23 +590,25 @@ const RootKKTSolver =
 # Use those maps for residuals and slacks, without legacy Jacobian caches.
 function update_residuals!(solver::RootKKTSolver)
     ws = solver.schur
-    copyto!(solver.Rp, LRO.cons_constant(solver.model))
+    solver.Rp .= cone_data_scale(solver.state) .* LRO.cons_constant(solver.model)
     for (i, b) in enumerate(solver.blocks)
         columns, A = ws.entries[i]
         for (k, j) in enumerate(columns)
             solver.Rp[j] -= LinearAlgebra.dot(view(A, :, k), vec(b.X))
         end
         _copy_to_dense!(b.Rd, LRO.grad(solver.model, LRO.MatrixIndex(i)))
-        b.Rd .-= b.S
+        b.Rd .= cone_data_scale(solver.state) .* b.Rd .- b.S
         LinearAlgebra.mul!(vec(b.Rd), A, view(solver.y, columns), -1, true)
         solver.rd_nonzero[i] =
-            LinearAlgebra.norm(b.Rd, Inf) > 100eps(eltype(solver.y))*max(1, solver.cnorm[i])
+            LinearAlgebra.norm(b.Rd, Inf) >
+            100eps(eltype(solver.y))*cone_data_scale(solver.state)*max(1, solver.cnorm[i])
     end
     if solver.n_scalar > 0
         data = _inner(solver.model)
         LinearAlgebra.mul!(solver.Rp, data.C_lin, solver.x, -1, true)
         LinearAlgebra.mul!(solver.Rd_lin, data.C_lin', solver.y)
-        solver.Rd_lin .= data.d_lin .- solver.z .- solver.Rd_lin
+        solver.Rd_lin .=
+            cone_data_scale(solver.state) .* data.d_lin .- solver.z .- solver.Rd_lin
     end
     additional_residuals!(ws, solver)
     return
@@ -640,7 +663,11 @@ function refine_root_direction!(ws::RootKKTWorkspace{T}, solver, linear_solver) 
     MadNLP.solve_linear_system!(linear_solver, ws.rhs)
     residual = root_linear_residual!(ws, solver, ws.rhs)
     rhs_norm = maximum(abs(ws.saved_rhs[i]/ws.scale[i]) for i in eachindex(ws.rhs))
-    tolerance = max(T(10)*eps(T), solver.opt.tol*T(1e-3))*max(one(T), rhs_norm)
+    tolerance =
+        max(T(10)*eps(T), solver.opt.tol*T(1e-3))*max(
+            T(cone_data_scale(solver.state)),
+            rhs_norm,
+        )
     for iteration = 1:5
         if residual <= tolerance
             break
@@ -729,3 +756,12 @@ function schur_workspace(component::SparseKKT, T, n, model)
         model,
     )
 end
+
+function _base_root_linear_solve!(ws, solver)
+    ws.rhs .*= ws.scale
+    copyto!(ws.saved_rhs, ws.rhs)
+    refine_root_direction!(ws, solver, ws.linear_solver)
+    ws.rhs .*= ws.scale
+    return
+end
+_root_linear_solve!(ws, solver, state, mu, corrected) = _base_root_linear_solve!(ws, solver)

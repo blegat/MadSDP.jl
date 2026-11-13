@@ -13,6 +13,11 @@ import MathOptInterface as MOI
         MadSDP.RootKKT(MadNLP.LDLSolver),
         MadSDP.RootKKT(MadNLP.QDLDLSolver),
         MadSDP.SparseKKT(),
+        MadSDP.SparseKKT(
+            linear_solver = MadNLP.QDLDLSolver,
+            qdldl_static_regularization = 1e-6,
+            equilibrate = false,
+        ),
         MadSDP.SparseKKT(linear_solver = MadNLP.UmfpackSolver),
     )
         model = JuMP.Model(MadSDP.Optimizer)
@@ -37,6 +42,9 @@ import MathOptInterface as MOI
             Inf,
         ) < 1e-6
         @test optimizer.solver.inner.schur.linear_solver isa schur.linear_solver
+        if haskey(schur.options, :equilibrate) && !schur.options.equilibrate
+            @test all(isone, optimizer.solver.inner.schur.scale)
+        end
     end
 end
 @testset "Cone Hessian triangular coordinates" begin

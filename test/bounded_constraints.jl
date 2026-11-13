@@ -2,6 +2,7 @@ module TestBoundedConstraints
 using Test, LinearAlgebra
 import JuMP
 import MadSDP
+import MadNLP
 import LowRankOpt as LRO
 import NLPModels
 import MathOptInterface as MOI
@@ -97,7 +98,7 @@ end
     ) < 1e-7
 end
 
-@testset "Redundant equalities use KKT regularization" begin
+@testset "Dependent equalities stay outside the KKT system" begin
     m = JuMP.Model(MadSDP.Optimizer)
     JuMP.set_silent(m)
     JuMP.set_attribute(m, "schur", MadSDP.RootKKT())
@@ -109,7 +110,7 @@ end
     o = JuMP.unsafe_backend(m)
     @test JuMP.termination_status(m) == MOI.OPTIMAL
     @test JuMP.value(x) ≈ 1 atol=1e-7
-    @test o.solver.inner.schur.regularization > 0
+    @test length(o.solver.inner.schur.equality.equalities)==1
     @test norm(
         NLPModels.grad(o.model, o.solver.stats.solution) +
         NLPModels.jtprod(o.model, o.solver.stats.solution, o.solver.stats.multipliers),
@@ -117,4 +118,28 @@ end
     ) < 1e-7
 end
 
+@testset "Check every original equality after reduction" begin
+    model=JuMP.Model(MadSDP.Optimizer)
+    JuMP.set_silent(model)
+    JuMP.set_attribute(model, "schur", MadSDP.SparseKKT())
+    JuMP.@variable(model, x)
+    JuMP.@constraint(model, x==1)
+    JuMP.@constraint(model, 1e6x==1e6)
+    JuMP.@objective(model, Min, x)
+    JuMP.optimize!(model)
+    optimizer=JuMP.unsafe_backend(model)
+    inner=optimizer.solver.inner
+    @test JuMP.termination_status(model)==MOI.OPTIMAL
+    @test length(inner.schur.equality.equalities)==1
+    inner.y[1]=1+1e-10
+    inner.status=MadNLP.REGULAR
+    MadSDP.update_residuals!(inner)
+    MadSDP.update_termination!(inner)
+    @test inner.inf_du ≈ LRO.constraint_violation(optimizer.model, inner.y) atol=eps(1e6)
+    @test inner.inf_du>inner.opt.tol
+    @test inner.status!=MadNLP.SOLVE_SUCCEEDED
+    MadSDP.solve!(inner; verbose = false)
+    @test inner.status==MadNLP.SOLVE_SUCCEEDED
+    @test LRO.constraint_violation(optimizer.model, inner.y)<=inner.opt.tol
+end
 end
