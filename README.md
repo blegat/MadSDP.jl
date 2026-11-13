@@ -9,6 +9,24 @@ MadSDP is a **malleable solver**, thanks to [MadNLP](https://github.com/MadNLP/M
 
 MadSDP provides an interface to [MathOptInterface](https://github.com/jump-dev/MathOptInterface.jl) through [LowRankOpt](https://github.com/blegat/LowRankOpt.jl), so it can be used with [JuMP](https://jump.dev).
 
+## Design and performance
+
+MadSDP is designed to be a simple, extensible building block for solving SDPs. Its core implements the interior-point algorithm; formulation, structural reductions, and efficient model computations belong in composable layers around it. The aim is to make specialized performance possible with readable, reusable code, while keeping the algorithm easy to inspect and modify.
+
+Performance and numerical robustness are sensitive to the formulation, PSD block sizes, number of constraints, matrix structure, scaling, algorithmic components, and linear algebra backend. The defaults are starting points for experimentation. MadSDP expects users to investigate these choices and keeps them explicit, rather than accumulating problem-specific heuristics and tuned constants to make every instance work out of the box. It currently has no presolve or automatic problem scaling.
+
+For polynomial optimization, [SumOfSquares](https://github.com/jump-dev/SumOfSquares.jl) is the modeling layer: it constructs the SDP certificate and provides choices of basis, symmetry reduction, and sparsity. Compose these choices with Dualization and the SDP solver, and inspect the resulting formulation.
+
+When working on a problem, try the following and compare solve time, residuals, and the accuracy needed by your application:
+
+1. **Primal versus dual formulation.** Try both `Model(MadSDP.Optimizer)` and `Model(Dualization.dual_optimizer(MadSDP.Optimizer))`, after importing [Dualization](https://github.com/jump-dev/Dualization.jl). Dualization can substantially change the number of constraints and the size of the Schur complement. See the [JuMP dualization tutorial](https://jump.dev/JuMP.jl/stable/tutorials/conic/dualization/).
+2. **Symmetry reduction.** Exploit symmetry to reduce matrix block sizes and repeated computations. Options include [SDPSymmetryReduction](https://github.com/DanielBrosch/SDPSymmetryReduction.jl) and [SymbolicWedderburn](https://github.com/kalmarek/SymbolicWedderburn.jl), for example through [SumOfSquares symmetry reduction](https://jump.dev/SumOfSquares.jl/stable/generated/Symmetry/permutation_symmetry/).
+3. **Chordal sparsity.** Try [MathOptChordalDecomposition](https://github.com/samuelsonric/MathOptChordalDecomposition.jl) to decompose sparse PSD constraints into smaller blocks; the [JuMP chordal decomposition tutorial](https://jump.dev/JuMP.jl/stable/tutorials/conic/chordal_decomposition/) explains the tradeoffs. For polynomial models, also explore SumOfSquares' sparsity certificates. Some sparse SOS certificates change the relaxation, so compare the resulting bounds as well as runtime.
+4. **Facial reduction.** If the constraints force feasible matrices onto a proper face of the PSD cone, reformulate the problem on that smaller face. This can reduce dimensions and address the lack of strict feasibility that makes interior-point methods struggle. See [Permenter and Parrilo's introduction to partial facial reduction](https://arxiv.org/abs/1408.4685).
+5. **Scaling and basis selection.** Rescale variables and constraints to avoid widely different coefficient magnitudes, and choose a basis suited to the problem. For SOS models, the [univariate polynomial tutorial](https://jump.dev/SumOfSquares.jl/stable/generated/Getting%20started/univariate/#Changing-the-polynomial-basis) illustrates replacing the monomial basis with a Chebyshev basis to address conditioning; see also [scaled monomial bases](https://jump.dev/SumOfSquares.jl/stable/variables/#Choosing-a-polynomial-basis). Basis selection and variable scaling are complementary choices.
+
+These transformations can be combined, but their benefits depend on the instance and their order. After choosing a formulation, experiment with the algorithmic components below and profile where time is spent.
+
 ## Getting help
 
 If you need help, please ask a question on the [JuMP community forum](https://jump.dev/forum).
@@ -118,7 +136,16 @@ See [src/components.jl](src/components.jl) for the component interfaces and thei
 
 MadSDP separates the interior-point algorithm from the computations that describe the SDP. [LowRankOpt](https://github.com/blegat/LowRankOpt.jl) translates JuMP/MathOptInterface models into an extension of the [NLPModels](https://jso.dev/NLPModels.jl/) interface for PSD matrix blocks. The solver uses this interface for constraint and adjoint products, objective data, and Schur complement assembly.
 
-You can supply your own coefficient matrices `Aᵢ` with custom Julia types to preserve structure and provide efficient matrix operations. [`LowRankOpt.LinearCombinationInSet`](https://github.com/blegat/LowRankOpt.jl#low-rank-constraints) carries these representations through the modeling interface instead of expanding them into generic affine coefficients. For ordinary MOI PSD constraints, LowRankOpt automatically detects some useful structure, including rank-one and one-hot matrices. The `"detect_rank_one"` and `"detect_one_hot"` attributes control these detections; explicit matrix representations let you express structure beyond what automatic detection recognizes. Check `print_active_bridges(model)` to see whether the bridges preserve your representation.
+You can supply your own coefficient matrices `Aᵢ` with custom Julia types to preserve structure and provide efficient matrix operations. The structured set to use depends on whether your modeling stack includes Dualization:
+
+| Modeling stack | Structured set in the user model | Operation represented |
+| --- | --- | --- |
+| `MadSDP.Optimizer` directly | `LowRankOpt.LinearCombinationInSet` | A linear combination of the `Aᵢ` belongs to the PSD cone. |
+| `Dualization.dual_optimizer(MadSDP.Optimizer)` | `LowRankOpt.SetDotProducts` | Inner products `⟨Aᵢ, X⟩` with a PSD matrix `X`. |
+
+With Dualization, use `SetDotProducts` in your model: dualization turns it into the `LinearCombinationInSet` representation consumed by LowRankOpt underneath MadSDP. Sending `SetDotProducts` directly through the generic bridges can instead expand it into ordinary SDP constraints and lose the custom matrix structure. See LowRankOpt's [structured constraints documentation](https://github.com/blegat/LowRankOpt.jl#low-rank-constraints) and check `print_active_bridges(model)` to see whether your modeling layers preserve the representation.
+
+For ordinary MOI PSD constraints, LowRankOpt automatically detects some useful structure, including rank-one and one-hot matrices. The `"detect_rank_one"` and `"detect_one_hot"` attributes control these detections; explicit matrix representations let you express structure beyond what automatic detection recognizes.
 
 You can also work directly at the model callback layer, without constructing a JuMP model. Implement or specialize the SDP-aware NLPModels callbacks used by MadSDP to compute constraint products, adjoint products, and Schur complements using your own formulas. Relevant operations include `LowRankOpt.add_jprod!`, `LowRankOpt.unsafe_jtprod`, and `LowRankOpt.schur_complement!`; see LowRankOpt's [model](https://github.com/blegat/LowRankOpt.jl/blob/main/src/model.jl) and [buffering](https://github.com/blegat/LowRankOpt.jl/blob/main/src/buffer.jl) interfaces. Custom models must satisfy the SDP block-access and buffering interfaces as well as the callbacks; implementing the scalar NLPModels interface alone is not sufficient.
 
