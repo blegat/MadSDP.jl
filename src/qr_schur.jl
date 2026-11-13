@@ -14,6 +14,8 @@ function check_schur(::QRSchur, ::AbstractAlgorithm)
 end
 check_schur(::QRSchur, ::PrimalDual{<:NT}) = nothing
 
+needs_schur_buffer(::QRSchur) = false
+
 function schur_workspace(::QRSchur, ::Type{T}, m) where {T}
     if T != Float64
         throw(ArgumentError("QRSchur requires Float64 data."))

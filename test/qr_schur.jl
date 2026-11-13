@@ -155,4 +155,24 @@ end
     end
 end
 
+@testset "Schur workspace policy" begin
+    model = example(; scalars = 2)
+    full = LRO.BufferedModelForSchur(model, 8)
+    lean = LRO.BufferedModelForSchur(model, 8; schur = false)
+    for input in (model, full, lean),
+        schur in (MadSDP.QRSchur(), MadSDP.DenseCholesky(), MadSDP.MadNLPSchur())
+
+        solver = MadSDP.MadSDPSolver(input; schur, step = MadSDP.CholeskyBacktrack())
+        @test solver.model.model === model
+        @test isnothing(solver.model.schur_buffer) == (schur isa MadSDP.QRSchur)
+        if input isa LRO.BufferedModelForSchur
+            @test solver.model.jprod_buffer === input.jprod_buffer
+            @test solver.model.jtprod_buffer === input.jtprod_buffer
+        end
+        MadSDP.solve!(solver; verbose = false)
+        @test solver.status == MadNLP.SOLVE_SUCCEEDED
+        @test max(solver.inf_pr, solver.inf_du, solver.inf_compl) <= solver.opt.tol
+    end
+end
+
 end

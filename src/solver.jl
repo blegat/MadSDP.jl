@@ -95,9 +95,11 @@ function MadSDPSolver(
     options...,
 ) where {T}
     opt = MadSDPOptions{T}(; options...)
-    if !(model isa LRO.BufferedModelForSchur)
-        model = LRO.BufferedModelForSchur(model, opt.datasparsity)
-    end
+    model = LRO.BufferedModelForSchur(
+        model,
+        opt.datasparsity;
+        schur = needs_schur_buffer(schur),
+    )
     nblocks = LRO.num_matrices(model)
     n_scalar = LRO.num_scalars(model)
     if nblocks == 0 && n_scalar == 0
