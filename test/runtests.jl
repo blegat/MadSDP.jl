@@ -29,6 +29,8 @@ function build_sdp(
     return LRO.Model([sparse(C)], Amat, b, d_lin, C_lin, [n])
 end
 
+include("identity_scale.jl")
+
 # Mixed model with one PSD block + an LP block of size n_scalar.
 function build_mixed(
     C::AbstractMatrix{T},
