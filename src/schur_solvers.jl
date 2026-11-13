@@ -3,6 +3,7 @@
 check_schur(::AbstractSchurSolver, ::AbstractAlgorithm) = nothing
 
 needs_schur_buffer(::AbstractSchurSolver) = true
+needs_jacobian_buffers(::AbstractSchurSolver) = true
 
 mutable struct DenseCholeskyWorkspace{T}
     H::Matrix{T}
@@ -39,3 +40,6 @@ function factorize!(sys::SchurSystem)
 end
 
 schur_solve!(sys::SchurSystem, rhs) = solve_inplace!(sys, rhs)
+
+schur_workspace(component::AbstractSchurSolver, T, n, model) =
+    schur_workspace(component, T, n)

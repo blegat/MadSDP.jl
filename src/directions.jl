@@ -7,23 +7,20 @@
 # factors X = Lx Lx' and S = Ls Ls', if  Ls' Lx = U Σ V'  is the SVD, then
 #     G = Lx V Σ^{-1/2},     W = G G',
 # so that G⁻¹ X G⁻ᵀ = Gᵀ S G = Σ.
-# We obtain `V` and `Σ` from the eigendecomposition
-# `(Ls' Lx)' (Ls' Lx) = Lx' S Lx = V Σ² V'` which can be computed with a
-# reusable LAPACK workspace. On the central path, `Lx' S Lx = μ I` so
-# squaring does not deteriorate the conditioning.
+# Compute the SVD directly: forming M'M would square its condition number
+# and can lose positive singular values near the cone boundary.
 #
-# Reference : Loraine.jl/src/prepare_W.jl.
+# Reference: Loraine.jl/src/prepare_W.jl.
 struct NTWorkspace{T,E}
     W::Matrix{T}
     G::Matrix{T}
     Gi::Matrix{T}
     Lx::Matrix{T}
     M::Matrix{T}
-    N::Matrix{T}
     RNT::Matrix{T}
     tmp::Matrix{T}
     D::Vector{T}
-    eigen::E
+    svd::E
 end
 
 function direction_workspace(::NT, ::Type{T}, n) where {T}
@@ -36,31 +33,31 @@ function direction_workspace(::NT, ::Type{T}, n) where {T}
         mat(),
         mat(),
         mat(),
-        mat(),
         zeros(T, n),
-        LRO.EigenWorkspace(mat()),
+        FastLapackInterface.SVDsvdWs(mat(); jobu = 'N', jobvt = 'A'),
     )
 end
 
-function prepare_direction!(ws::NTWorkspace{T}, b::SDPBlock) where {T}
+prepare_direction!(ws, b, normal_equations::Bool) = prepare_direction!(ws, b)
+function prepare_direction!(
+    ws::NTWorkspace{T},
+    b::SDPBlock,
+    normal_equations::Bool = true,
+) where {T}
     _cholesky_factor!(ws.Lx, b.X) || return false
     Lx = LinearAlgebra.LowerTriangular(ws.Lx)
     # M = Ls' * Lx
     copyto!(ws.M, ws.Lx)
     LinearAlgebra.lmul!(LinearAlgebra.LowerTriangular(b.Ls)', ws.M)
-    # N = M' * M = V Σ² V'
-    LinearAlgebra.mul!(ws.N, ws.M', ws.M)
-    _symmetrize!(ws.N)
-    λ, V = LRO.eigen!(ws.eigen, ws.N; vectors = true)
-    @inbounds for k in eachindex(ws.D)
-        λ[k] > zero(T) || return false
-        ws.D[k] = sqrt(λ[k])
+    _, singular_values, Vt = LinearAlgebra.LAPACK.gesvd!(ws.svd, 'N', 'A', ws.M)
+    copyto!(ws.D, singular_values)
+    if any(<=(zero(T)), ws.D)
+        return false
     end
-    # G = Lx V Σ^{-1/2}
-    copyto!(ws.G, V)
+    # G = Lx V Σ⁻¹ᐟ² and Gi = Σ¹ᐟ² V' Lx⁻¹.
+    LinearAlgebra.transpose!(ws.G, Vt)
     LinearAlgebra.lmul!(Lx, ws.G)
-    # Gi = Σ^{1/2} V' Lx⁻¹
-    LinearAlgebra.transpose!(ws.Gi, V)
+    copyto!(ws.Gi, Vt)
     @inbounds for k in axes(ws.G, 2)
         scale = sqrt(ws.D[k])
         for i in axes(ws.G, 1)
@@ -69,8 +66,10 @@ function prepare_direction!(ws::NTWorkspace{T}, b::SDPBlock) where {T}
         end
     end
     LinearAlgebra.rdiv!(ws.Gi, Lx)
-    LinearAlgebra.mul!(ws.W, ws.G, ws.G')
-    _symmetrize!(ws.W)
+    if normal_equations
+        LinearAlgebra.mul!(ws.W, ws.G, ws.G')
+        _symmetrize!(ws.W)
+    end
     return true
 end
 
@@ -87,7 +86,18 @@ end
 # `RNT[p, q] = -(G⁻¹ ΔX ΔS G + Gᵀ ΔS ΔX G⁻ᵀ)[p, q] / (Σ[p] + Σ[q])` and
 # `corr = G RNT Gᵀ`. As `ΔX` and `ΔS` are symmetric, the second term is the
 # transpose of the first one.
-function correction!(corr, ws::NTWorkspace, b::SDPBlock)
+correction!(corr, ws, b, normal_equations::Bool) = correction!(corr, ws, b)
+function correction!(corr, ws::NTWorkspace, b::SDPBlock, normal_equations::Bool = true)
+    if !normal_equations
+        # RootKKT retains both directions in NT coordinates. Their Jordan
+        # product avoids undoing and reapplying the ill-conditioned scaling.
+        LinearAlgebra.mul!(ws.RNT, ws.M, ws.tmp)
+        for q in axes(ws.RNT, 2), p = 1:q
+            value = -(ws.RNT[p, q]+ws.RNT[q, p])/(ws.D[p]+ws.D[q])
+            ws.RNT[p, q] = ws.RNT[q, p] = value
+        end
+        return corr
+    end
     LinearAlgebra.mul!(ws.tmp, ws.Gi, b.work.delX)
     LinearAlgebra.mul!(ws.RNT, ws.tmp, b.work.delS)
     LinearAlgebra.mul!(ws.M, ws.RNT, ws.G)

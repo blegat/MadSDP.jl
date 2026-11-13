@@ -11,7 +11,7 @@ include("termination.jl")
 
 primal_obj(solver) = MadSDP.primal_objective(solver)
 
-# Build an LRO.Model from a single dense PSD block, given block cost `C` and a
+# Build an LRO.DualModel from a single dense PSD block, given block cost `C` and a
 # list of constraint matrices `Aj` with RHS `b_j`.
 function build_sdp(
     C::AbstractMatrix{T},
@@ -27,7 +27,7 @@ function build_sdp(
     end
     d_lin = SparseVector{T,Int64}(0, Int64[], T[])
     C_lin = SparseMatrixCSC{T,Int64}(m, 0, Int64[1], Int64[], T[])
-    return LRO.Model([sparse(C)], Amat, b, d_lin, C_lin, [n])
+    return LRO.DualModel([sparse(C)], Amat, b, d_lin, C_lin, [n])
 end
 
 include("identity_scale.jl")
@@ -52,7 +52,7 @@ function build_mixed(
     d_lin =
         SparseVector{T,Int64}(length(d_lin_vec), Int64.(nz), T[d_lin_vec[i] for i in nz])
     C_lin = SparseMatrixCSC{T,Int64}(sparse(C_lin_mat))
-    return LRO.Model([sparse(C)], Amat, b, d_lin, C_lin, [n])
+    return LRO.DualModel([sparse(C)], Amat, b, d_lin, C_lin, [n])
 end
 
 # Tiny SDP : min ⟨C, X⟩ s.t. X[1,1] = 1, X ⪰ 0, with C = diag(2, 1).
@@ -92,12 +92,12 @@ end
     @test isapprox(primal_obj(solver), -18.0; atol = 1e-4)
 end
 
-# Same problem, but pre-wrap in BufferedModelForSchur to exercise that path.
-@testset "BufferedModelForSchur input" begin
+# Same problem, but pre-wrap in BufferedDualModel to exercise that path.
+@testset "BufferedDualModel input" begin
     C = Matrix{Float64}([3.0 0.0; 0.0 2.0])
     A1 = Matrix{Float64}([1.0 0.0; 0.0 1.0])
     model = build_sdp(C, [A1], [1.0])
-    buffered = LRO.BufferedModelForSchur(model, 1e-12)
+    buffered = LRO.BufferedDualModel(model, 1e-12)
 
     solver = MadSDPSolver(buffered; tol = 1e-8, max_iter = 60)
     solve!(solver; verbose = false)
@@ -257,3 +257,15 @@ end
 end
 
 include("qr_schur.jl")
+
+include("primal_model.jl")
+
+include("bounded_constraints.jl")
+
+include("nt_scaling.jl")
+
+include("soc.jl")
+
+include("root_kkt.jl")
+
+include("homogeneous.jl")

@@ -25,6 +25,7 @@ function update_residuals!(solver)
     @inbounds for j in eachindex(solver.Rp)
         solver.Rp[j] = LRO.cons_constant(model)[j] - solver.Rp[j]
     end
+    additional_residuals!(solver.schur, solver)
     # Matrix dual residual.
     for (i, b) in enumerate(solver.blocks)
         AT_y = LRO.unsafe_jtprod(model, solver.y, LRO.MatrixIndex(i))
@@ -127,11 +128,12 @@ end
 # stored in `delX`, `delS`, `delx` and `delz`.
 function correction!(solver)
     for b in solver.blocks
-        correction!(b.work.corr, b.work.dir, b)
+        correction!(b.work.corr, b.work.dir, b, needs_normal_equations(solver.schur))
     end
     @inbounds for k = 1:(solver.n_scalar)
         solver.corr_lin[k] = -solver.delx[k] * solver.delz[k] * solver.zinv[k]
     end
+    additional_correction!(solver.schur)
     return
 end
 
@@ -178,8 +180,18 @@ prepare_step!(::EigenStep, b::SDPBlock) = _cholesky_factor!(b.work.Lx, b.X)
 
 # Fraction `τ` of the largest step keeping `L L' + α Δ` positive definite.
 function _eigen_step(workspace::_EigenStepWorkspace{T}, L, Δ, τ) where {T}
-    A = _CongruenceInverse(L, Δ, workspace.tmp)
-    λ = LRO.lanczos_eigmin!(workspace.eigen, A)
+    λ = if size(L, 1) <= 8
+        matrix = workspace.eigen.scratch
+        copyto!(matrix, Δ)
+        factor = LinearAlgebra.LowerTriangular(L)
+        LinearAlgebra.ldiv!(factor, matrix)
+        LinearAlgebra.rdiv!(matrix, factor')
+        _symmetrize!(matrix)
+        LRO.eigmin!(workspace.eigen, matrix)
+    else
+        A = _CongruenceInverse(L, Δ, workspace.tmp)
+        LRO.lanczos_eigmin!(workspace.eigen, A)
+    end
     return λ > -sqrt(eps(T)) ? one(T) : min(one(T), -T(τ) / λ)
 end
 
@@ -194,7 +206,7 @@ function step_lengths(s::EigenStep, solver)
         α = min(α, T(s.τ) * _max_scalar_step(solver.x, solver.delx))
         β = min(β, T(s.τ) * _max_scalar_step(solver.z, solver.delz))
     end
-    return α, β
+    return additional_step_lengths(solver.schur, α, β, s.τ)
 end
 
 step_workspace(::CholeskyBacktrack, ::Type, _) = nothing
@@ -224,7 +236,7 @@ end
 function step_lengths(s::CholeskyBacktrack, solver)
     α = _backtrack(s, solver.blocks, b -> b.X, b -> b.work.delX, solver.x, solver.delx)
     β = _backtrack(s, solver.blocks, b -> b.S, b -> b.work.delS, solver.z, solver.delz)
-    return α, β
+    return additional_step_lengths(solver.schur, α, β, s.boundary)
 end
 
 # Complementarity at the trial point `(X + α ΔX, S + β ΔS)`.
@@ -239,5 +251,6 @@ function affine_complementarity(solver, α::T, β::T) where {T}
     @inbounds for k = 1:(solver.n_scalar)
         s += (solver.x[k] + α * solver.delx[k]) * (solver.z[k] + β * solver.delz[k])
     end
-    return s / max(_barrier_dim(solver), 1)
+    return (s+additional_affine_complementarity(solver.schur, α, β)) /
+           max(_barrier_dim(solver), 1)
 end

@@ -296,7 +296,66 @@ independent constraints. Unlike the dense Schur solvers, this component
 allocates while assembling and factoring the sparse matrix. It does not
 use `regularize_schur`. For example:
 ```julia
-MadSDPSolver(model; schur = QRSchur(), step = CholeskyBacktrack())
+MadSDPSolver(model; schur = QRSchur(),
+    initial_point = ScaledIdentity(10.0), step = CholeskyBacktrack())
 ```
 """
 struct QRSchur <: AbstractSchurSolver end
+
+"""
+    AugmentedKKT()
+
+Sparse augmented Newton system using MadNLP's linear solver. Equality rows
+remain in the KKT system and do not contribute to the barrier.
+"""
+struct AugmentedKKT <: AbstractSchurSolver end
+
+"Square-root augmented KKT system with NT cone scaling."
+struct RootKKT <: AbstractSchurSolver
+    linear_solver::Type
+    cone_hessian::Bool
+    equilibrate::Bool
+    options::NamedTuple
+end
+RootKKT(;
+    linear_solver = MadNLP.UmfpackSolver,
+    cone_hessian = false,
+    equilibrate = true,
+    options...,
+) = RootKKT(linear_solver, cone_hessian, equilibrate, NamedTuple(options))
+RootKKT(linear_solver::Type) = RootKKT(; linear_solver)
+
+"""
+    SparseKKT(;linear_solver=MadNLP.MumpsSolver,options...)
+
+Sparse cone KKT system using MadNLP's linear solver modules. For each cone,
+choose between the cone Hessian and its NT square root by their structural
+nonzero counts. Equalities remain explicit and scalar bounds use slacks.
+Additional keywords configure the selected linear solver.
+"""
+struct SparseKKT <: AbstractSchurSolver
+    linear_solver::Type
+    options::NamedTuple
+end
+SparseKKT(; linear_solver = MadNLP.MumpsSolver, options...) =
+    SparseKKT(linear_solver, NamedTuple(options))
+
+"""
+    HomogeneousPrimalDual(;direction=NT(),step=CholeskyBacktrack(),centering=Mehrotra())
+
+Homogeneous primal-dual embedding with NT cone scaling. Uses RootKKT or
+SparseKKT and shares their factorization across all predictor/corrector
+right-hand sides.
+"""
+struct HomogeneousPrimalDual{A<:PrimalDual} <: AbstractAlgorithm
+    inner::A
+end
+HomogeneousPrimalDual(;
+    direction = NT(),
+    step = CholeskyBacktrack(),
+    centering = Mehrotra(),
+) = HomogeneousPrimalDual(PrimalDual(direction, step, centering))
+cone_data_scale(_) = 1
+homogeneous_tau_direction(_) = 0
+
+homogeneous_residual_factor(_) = 1

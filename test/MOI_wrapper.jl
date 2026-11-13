@@ -112,9 +112,7 @@ function test_runtests()
             # Quadratic / nonlinear are out of scope for an SDP solver.
             r"^test_quadratic_",
             r"^test_nonlinear_",
-            # Conic test families we don't support (SOC, exp, geomean, ...).
-            r"^test_conic_SecondOrderCone",
-            r"^test_conic_RotatedSecondOrderCone",
+            # Conic test families we do not support (exp, geomean, ...).
             r"^test_conic_NormCone",
             r"^test_conic_NormInfinity",
             r"^test_conic_NormOne",

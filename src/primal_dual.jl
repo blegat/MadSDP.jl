@@ -28,12 +28,13 @@ end
 # factorizations of the blocks and the scalings of the Schur complement.
 function _prepare!(solver::MadSDPSolver{T}, a::PrimalDual) where {T}
     for b in solver.blocks
-        prepare_block!(b) || return false
-        prepare_direction!(b.work.dir, b) || return false
-        prepare_step!(a.step, b) || return false
+        prepare_block!(b, needs_normal_equations(solver.schur)) || return false
+        prepare_direction!(b.work.dir, b, needs_normal_equations(solver.schur)) ||
+            return false
+        prepare_step!(a.step, b, solver.schur) || return false
     end
     solver.zinv .= inv.(solver.z)
-    return true
+    return prepare_additional_cones!(solver.schur, solver)
 end
 
 # Solves the Schur system targeting `μ S⁻¹` and computes the directions.
@@ -66,6 +67,7 @@ function _take_step!(solver::MadSDPSolver{T}, α::T, β::T) where {T}
         @. solver.x += α * solver.delx
         @. solver.z += β * solver.delz
     end
+    additional_step!(solver.schur, α, β)
     solver.iter += 1
     update_residuals!(solver)
     return
@@ -128,8 +130,25 @@ function update_termination!(solver::MadSDPSolver{T}, ::PrimalDual) where {T}
     solver.inf_compl = abs(pobj - dobj) / max(T(1), abs(pobj) + abs(dobj))
     converged = max(solver.inf_pr, solver.inf_du, solver.inf_compl) <= solver.opt.tol
     _update_status!(solver, converged)
-    if solver.status == MadNLP.REGULAR && solver.mu < solver.opt.mu_min
+    # Detect a conic Farkas ray before an infeasible path can overflow.
+    if !converged && solver.inf_du > solver.opt.tol && pobj < 0
+        constant = LRO.cons_constant(solver.model)
+        residual = maximum(
+            (abs(constant[j]-solver.Rp[j]) for j in eachindex(constant));
+            init = zero(T),
+        )
+        if residual/(-pobj) <= T(1e-8)
+            solver.status = MadNLP.INFEASIBLE_PROBLEM_DETECTED
+        end
+    end
+    if solver.status == MadNLP.REGULAR &&
+       _barrier_dim(solver) > 0 &&
+       solver.mu < solver.opt.mu_min
         solver.status = MadNLP.SEARCH_DIRECTION_BECOMES_TOO_SMALL
     end
     return
 end
+
+needs_normal_equations(_) = true
+
+prepare_step!(step, b, workspace) = prepare_step!(step, b)

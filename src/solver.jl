@@ -5,7 +5,7 @@
 # `components.jl`; this file contains what all algorithms share.
 
 mutable struct MadSDPSolver{T,M,B<:SDPBlock{T},A<:AbstractAlgorithm,AS,I,SW}
-    model::M                            # LRO.BufferedModelForSchur
+    model::M                            # LRO.BufferedDualModel
     algorithm::A
     state::AS                           # see `algorithm_state`
     initial_point::I
@@ -29,8 +29,8 @@ mutable struct MadSDPSolver{T,M,B<:SDPBlock{T},A<:AbstractAlgorithm,AS,I,SW}
     cnorm::Vector{T}                    # ‖C_i‖_∞
     # Schur complement scalings `⟨Aⱼ, L Aₖ R⟩`; their scalar parts are `x`
     # and `1 ./ z` so that their product is `x ./ z`.
-    L::LRO.ShapedSolution{T,Matrix{T}}
-    R::LRO.ShapedSolution{T,Matrix{T}}
+    L::LRO.ShapedConeVector{T,Matrix{T}}
+    R::LRO.ShapedConeVector{T,Matrix{T}}
     opt::MadSDPOptions{T}
     m::Int
     nblocks::Int
@@ -48,13 +48,13 @@ mutable struct MadSDPSolver{T,M,B<:SDPBlock{T},A<:AbstractAlgorithm,AS,I,SW}
     start_time::Float64
 end
 
-# Inner (unbuffered) `LRO.Model` — the source of truth for `C_lin` / `d_lin`.
-_inner(m::LRO.BufferedModelForSchur) = m.model
-_inner(m::LRO.Model) = m
+# Inner (unbuffered) `LRO.DualModel` — the source of truth for `C_lin` / `d_lin`.
+_inner(m::LRO.BufferedDualModel) = m.model
+_inner(m::LRO.DualModel) = m
 
 """
     MadSDPSolver(
-        model::LRO.AbstractModel;
+        model::LRO.AbstractDualModel;
         algorithm::AbstractAlgorithm = PrimalDual(direction, step, centering),
         direction::AbstractDirection = NT(),
         step::AbstractStepLength = EigenStep(),
@@ -85,24 +85,25 @@ and the dual method of [Nes25] is `MadSDPSolver(model; algorithm =
 DualCentering())`.
 """
 function MadSDPSolver(
-    model::LRO.AbstractModel{T};
+    model::LRO.AbstractDualModel{T};
     direction::AbstractDirection = NT(),
     step::AbstractStepLength = EigenStep(),
     centering::AbstractCentering = Mehrotra(),
     algorithm::AbstractAlgorithm = PrimalDual(direction, step, centering),
     initial_point::AbstractInitialPoint = default_initial_point(algorithm),
     schur::AbstractSchurSolver = DenseCholesky(),
+    native_model = nothing,
     options...,
 ) where {T}
     opt = MadSDPOptions{T}(; options...)
-    model = LRO.BufferedModelForSchur(
-        model,
-        opt.datasparsity;
-        schur = needs_schur_buffer(schur),
-    )
+    model = if needs_jacobian_buffers(schur)
+        LRO.BufferedDualModel(model, opt.datasparsity; schur = needs_schur_buffer(schur))
+    else
+        _inner(model)
+    end
     nblocks = LRO.num_matrices(model)
     n_scalar = LRO.num_scalars(model)
-    if nblocks == 0 && n_scalar == 0
+    if nblocks == 0 && n_scalar == 0 && !(schur isa Union{AugmentedKKT,RootKKT,SparseKKT})
         error("MadSDP: model has no variables.")
     end
     check_model(algorithm, model)
@@ -116,8 +117,8 @@ function MadSDPSolver(
     vec_m() = zeros(T, m)
     vec_s() = zeros(T, n_scalar)
     x, zinv = vec_s(), vec_s()
-    L = LRO.ShapedSolution(x, [schur_scaling(algorithm, b)[1] for b in blocks])
-    R = LRO.ShapedSolution(zinv, [schur_scaling(algorithm, b)[2] for b in blocks])
+    L = LRO.ShapedConeVector(x, [schur_scaling(algorithm, b)[1] for b in blocks])
+    R = LRO.ShapedConeVector(zinv, [schur_scaling(algorithm, b)[2] for b in blocks])
     cnorm =
         T[LinearAlgebra.norm(LRO.grad(model, LRO.MatrixIndex(i)), Inf) for i = 1:nblocks]
     return MadSDPSolver(
@@ -125,7 +126,7 @@ function MadSDPSolver(
         algorithm,
         algorithm_state(algorithm, T, m),
         initial_point,
-        schur_workspace(schur, T, m),
+        schur_workspace(schur, T, m, isnothing(native_model) ? model : native_model),
         blocks,
         vec_m(),
         vec_m(),
@@ -172,7 +173,7 @@ function primal_objective(solver::MadSDPSolver{T}) where {T}
     if solver.n_scalar > 0
         s += LinearAlgebra.dot(LRO.grad(solver.model, LRO.ScalarIndex), solver.x)
     end
-    return s
+    return s + additional_objective(solver.schur)
 end
 
 function dual_objective(solver::MadSDPSolver{T}) where {T}
@@ -180,7 +181,8 @@ function dual_objective(solver::MadSDPSolver{T}) where {T}
 end
 
 # Barrier parameter ν = Σ n_i + n_scalar.
-_barrier_dim(solver) = total_dim(solver.blocks) + solver.n_scalar
+_barrier_dim(solver) =
+    total_dim(solver.blocks) + solver.n_scalar + additional_barrier_degree(solver.schur)
 
 # Σ tr(X_i S_i) + dot(x, z).
 function total_complementarity(solver::MadSDPSolver{T}) where {T}
@@ -188,7 +190,7 @@ function total_complementarity(solver::MadSDPSolver{T}) where {T}
     if solver.n_scalar > 0
         s += LinearAlgebra.dot(solver.x, solver.z)
     end
-    return s
+    return s + additional_complementarity(solver.schur)
 end
 
 # `out = C_i - A*_i(y)`
@@ -200,7 +202,8 @@ function _slack!(out::Matrix{T}, model, y::Vector{T}, i::Integer) where {T}
 end
 
 # Sets the dual slacks `S = C - A*(y)` and `z = d - C_lin' y`.
-function _set_dual_slacks!(solver::MadSDPSolver)
+_set_dual_slacks!(solver::MadSDPSolver) = _set_dual_slacks!(solver, solver.schur)
+function _set_dual_slacks!(solver, workspace)
     for (i, b) in enumerate(solver.blocks)
         _slack!(b.S, solver.model, solver.y, i)
     end
@@ -287,6 +290,7 @@ end
 
 function initialize!(solver::MadSDPSolver)
     initial_point!(solver, solver.initial_point)
+    initialize_constraints!(solver.schur, solver)
     solver.iter = 0
     solver.status = MadNLP.REGULAR
     solver.start_time = time()
@@ -317,7 +321,7 @@ end
 
 iterate!(solver::MadSDPSolver) = iterate!(solver, solver.algorithm)
 
-# Relative primal and dual infeasibilities from `Rp`, `Rd` and `Rd_lin`.
+# Relative stationarity and primal infeasibility in the constraint units.
 function _update_infeasibilities!(solver::MadSDPSolver{T}) where {T}
     solver.inf_pr =
         LinearAlgebra.norm(solver.Rp, Inf) /
@@ -326,12 +330,10 @@ function _update_infeasibilities!(solver::MadSDPSolver{T}) where {T}
     for b in solver.blocks
         Rd_norm = max(Rd_norm, LinearAlgebra.norm(b.Rd, Inf))
     end
-    cnorm = maximum(solver.cnorm; init = zero(T))
     if solver.n_scalar > 0
         Rd_norm = max(Rd_norm, LinearAlgebra.norm(solver.Rd_lin, Inf))
-        cnorm = max(cnorm, LinearAlgebra.norm(_inner(solver.model).d_lin, Inf))
     end
-    solver.inf_du = Rd_norm / max(T(1), cnorm)
+    solver.inf_du = max(Rd_norm, additional_infeasibility(solver.schur))
     return
 end
 
@@ -394,13 +396,42 @@ function solve!(solver::MadSDPSolver{T}; verbose::Bool = true) where {T}
         update_termination!(solver)
         verbose && print_iter(solver)
     end
+    finalize_algorithm!(solver, solver.algorithm)
     return solver
 end
 
+finalize_algorithm!(solver, algorithm) = nothing
+
 """
-    madsdp(model::LRO.AbstractModel; kwargs...)
+    madsdp(model::LRO.AbstractDualModel; kwargs...)
 
 Solve the (possibly mixed LP + SDP) problem encoded as a LowRankOpt model
 with [`MadSDPSolver`](@ref). Returns the populated `MadSDPSolver`.
 """
 madsdp(model; kwargs...) = solve!(MadSDPSolver(model; kwargs...))
+
+function MadSDPSolver(model::LRO.Model; schur = nothing, options...)
+    if isnothing(schur)
+        direction = get(options, :direction, NT())
+        algorithm = get(options, :algorithm, nothing)
+        if algorithm isa PrimalDual
+            direction = algorithm.direction
+        end
+        schur = if algorithm isa DualCentering
+            DenseCholesky()
+        else
+            direction isa NT ? RootKKT() : AugmentedKKT()
+        end
+    end
+    if schur isa AugmentedKKT && LRO.num_second_order_cones(model) > 0
+        return MadSDPSolver(LRO.dual_model(model); schur, options...)
+    end
+    if schur isa Union{AugmentedKKT,RootKKT,SparseKKT}
+        data = model.data
+        C, d, _, _ = scalar_block_bounds(model)
+        dual =
+            LRO.DualModel(data.C, data.A, data.b, SparseArrays.sparsevec(d), C, data.msizes)
+        return MadSDPSolver(dual; schur, native_model = model, options...)
+    end
+    return MadSDPSolver(LRO.dual_model(model); schur, options...)
+end
