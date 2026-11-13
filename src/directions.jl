@@ -38,7 +38,12 @@ function direction_workspace(::NT, ::Type{T}, n) where {T}
     )
 end
 
-function prepare_direction!(ws::NTWorkspace{T}, b::SDPBlock) where {T}
+prepare_direction!(ws, b, normal_equations::Bool) = prepare_direction!(ws, b)
+function prepare_direction!(
+    ws::NTWorkspace{T},
+    b::SDPBlock,
+    normal_equations::Bool = true,
+) where {T}
     _cholesky_factor!(ws.Lx, b.X) || return false
     Lx = LinearAlgebra.LowerTriangular(ws.Lx)
     # M = Ls' * Lx
@@ -61,8 +66,10 @@ function prepare_direction!(ws::NTWorkspace{T}, b::SDPBlock) where {T}
         end
     end
     LinearAlgebra.rdiv!(ws.Gi, Lx)
-    LinearAlgebra.mul!(ws.W, ws.G, ws.G')
-    _symmetrize!(ws.W)
+    if normal_equations
+        LinearAlgebra.mul!(ws.W, ws.G, ws.G')
+        _symmetrize!(ws.W)
+    end
     return true
 end
 
@@ -79,7 +86,18 @@ end
 # `RNT[p, q] = -(G⁻¹ ΔX ΔS G + Gᵀ ΔS ΔX G⁻ᵀ)[p, q] / (Σ[p] + Σ[q])` and
 # `corr = G RNT Gᵀ`. As `ΔX` and `ΔS` are symmetric, the second term is the
 # transpose of the first one.
-function correction!(corr, ws::NTWorkspace, b::SDPBlock)
+correction!(corr, ws, b, normal_equations::Bool) = correction!(corr, ws, b)
+function correction!(corr, ws::NTWorkspace, b::SDPBlock, normal_equations::Bool = true)
+    if !normal_equations
+        # RootKKT retains both directions in NT coordinates. Their Jordan
+        # product avoids undoing and reapplying the ill-conditioned scaling.
+        LinearAlgebra.mul!(ws.RNT, ws.M, ws.tmp)
+        for q in axes(ws.RNT, 2), p = 1:q
+            value = -(ws.RNT[p, q]+ws.RNT[q, p])/(ws.D[p]+ws.D[q])
+            ws.RNT[p, q] = ws.RNT[q, p] = value
+        end
+        return corr
+    end
     LinearAlgebra.mul!(ws.tmp, ws.Gi, b.work.delX)
     LinearAlgebra.mul!(ws.RNT, ws.tmp, b.work.delS)
     LinearAlgebra.mul!(ws.M, ws.RNT, ws.G)

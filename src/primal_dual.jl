@@ -28,9 +28,10 @@ end
 # factorizations of the blocks and the scalings of the Schur complement.
 function _prepare!(solver::MadSDPSolver{T}, a::PrimalDual) where {T}
     for b in solver.blocks
-        prepare_block!(b) || return false
-        prepare_direction!(b.work.dir, b) || return false
-        prepare_step!(a.step, b) || return false
+        prepare_block!(b, needs_normal_equations(solver.schur)) || return false
+        prepare_direction!(b.work.dir, b, needs_normal_equations(solver.schur)) ||
+            return false
+        prepare_step!(a.step, b, solver.schur) || return false
     end
     solver.zinv .= inv.(solver.z)
     return prepare_additional_cones!(solver.schur, solver)
@@ -147,3 +148,7 @@ function update_termination!(solver::MadSDPSolver{T}, ::PrimalDual) where {T}
     end
     return
 end
+
+needs_normal_equations(_) = true
+
+prepare_step!(step, b, workspace) = prepare_step!(step, b)

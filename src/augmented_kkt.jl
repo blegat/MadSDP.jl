@@ -206,8 +206,7 @@ function additional_step!(ws::AugmentedKKTWorkspace, alpha, beta)
     return
 end
 additional_objective(ws::AugmentedKKTWorkspace) = LinearAlgebra.dot(ws.target, ws.eta)
-additional_infeasibility(ws::AugmentedKKTWorkspace) =
-    LinearAlgebra.norm(ws.residual, Inf)/max(1, LinearAlgebra.norm(ws.target, Inf))
+additional_infeasibility(ws::AugmentedKKTWorkspace) = LinearAlgebra.norm(ws.residual, Inf)
 
 initialize_constraints!(_, solver) = nothing
 function initialize_constraints!(ws::AugmentedKKTWorkspace{T}, solver) where {T}

@@ -311,4 +311,26 @@ remain in the KKT system and do not contribute to the barrier.
 struct AugmentedKKT <: AbstractSchurSolver end
 
 "Square-root augmented KKT system with NT cone scaling."
-struct RootKKT <: AbstractSchurSolver end
+struct RootKKT <: AbstractSchurSolver
+    linear_solver::Type
+    cone_hessian::Bool
+    options::NamedTuple
+end
+RootKKT(; linear_solver = MadNLP.UmfpackSolver, cone_hessian = false, options...) =
+    RootKKT(linear_solver, cone_hessian, NamedTuple(options))
+RootKKT(linear_solver::Type) = RootKKT(; linear_solver)
+
+"""
+    SparseKKT(;linear_solver=MadNLP.MumpsSolver,options...)
+
+Sparse cone KKT system using MadNLP's linear solver modules. For each cone,
+choose between the cone Hessian and its NT square root by their structural
+nonzero counts. Equalities remain explicit and scalar bounds use slacks.
+Additional keywords configure the selected linear solver.
+"""
+struct SparseKKT <: AbstractSchurSolver
+    linear_solver::Type
+    options::NamedTuple
+end
+SparseKKT(; linear_solver = MadNLP.MumpsSolver, options...) =
+    SparseKKT(linear_solver, NamedTuple(options))

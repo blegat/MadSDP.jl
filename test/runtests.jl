@@ -265,3 +265,5 @@ include("bounded_constraints.jl")
 include("nt_scaling.jl")
 
 include("soc.jl")
+
+include("root_kkt.jl")

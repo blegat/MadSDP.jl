@@ -123,9 +123,11 @@ function _inverse_from_cholesky!(Si::Matrix{T}, Ls::Matrix{T}) where {T}
 end
 
 # Factorizes `S` and computes `S⁻¹`; the quantities every direction needs.
-function prepare_block!(b::SDPBlock)
+function prepare_block!(b::SDPBlock, inverse::Bool = true)
     _cholesky_factor!(b.Ls, b.S) || return false
-    _inverse_from_cholesky!(b.Si, b.Ls)
+    if inverse
+        _inverse_from_cholesky!(b.Si, b.Ls)
+    end
     return true
 end
 

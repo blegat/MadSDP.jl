@@ -12,7 +12,7 @@ export MadSDPSolver, MadSDPOptions, madsdp, solve!
 export PrimalDual, DualCentering
 export NT, HKM, EigenStep, CholeskyBacktrack, Mehrotra, AdaptiveMu
 export ScaledIdentity, InitialPoint, DualShift, DenseCholesky, MadNLPSchur, QRSchur
-export AugmentedKKT, RootKKT
+export AugmentedKKT, RootKKT, SparseKKT
 
 include("options.jl")
 include("kkt.jl")

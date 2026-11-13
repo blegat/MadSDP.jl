@@ -96,11 +96,14 @@ function MadSDPSolver(
     options...,
 ) where {T}
     opt = MadSDPOptions{T}(; options...)
-    model =
+    model = if needs_jacobian_buffers(schur)
         LRO.BufferedDualModel(model, opt.datasparsity; schur = needs_schur_buffer(schur))
+    else
+        _inner(model)
+    end
     nblocks = LRO.num_matrices(model)
     n_scalar = LRO.num_scalars(model)
-    if nblocks == 0 && n_scalar == 0 && !(schur isa Union{AugmentedKKT,RootKKT})
+    if nblocks == 0 && n_scalar == 0 && !(schur isa Union{AugmentedKKT,RootKKT,SparseKKT})
         error("MadSDP: model has no variables.")
     end
     check_model(algorithm, model)
@@ -199,7 +202,8 @@ function _slack!(out::Matrix{T}, model, y::Vector{T}, i::Integer) where {T}
 end
 
 # Sets the dual slacks `S = C - A*(y)` and `z = d - C_lin' y`.
-function _set_dual_slacks!(solver::MadSDPSolver)
+_set_dual_slacks!(solver::MadSDPSolver) = _set_dual_slacks!(solver, solver.schur)
+function _set_dual_slacks!(solver, workspace)
     for (i, b) in enumerate(solver.blocks)
         _slack!(b.S, solver.model, solver.y, i)
     end
@@ -317,7 +321,7 @@ end
 
 iterate!(solver::MadSDPSolver) = iterate!(solver, solver.algorithm)
 
-# Relative primal and dual infeasibilities from `Rp`, `Rd` and `Rd_lin`.
+# Relative stationarity and primal infeasibility in the constraint units.
 function _update_infeasibilities!(solver::MadSDPSolver{T}) where {T}
     solver.inf_pr =
         LinearAlgebra.norm(solver.Rp, Inf) /
@@ -326,12 +330,10 @@ function _update_infeasibilities!(solver::MadSDPSolver{T}) where {T}
     for b in solver.blocks
         Rd_norm = max(Rd_norm, LinearAlgebra.norm(b.Rd, Inf))
     end
-    cnorm = maximum(solver.cnorm; init = zero(T))
     if solver.n_scalar > 0
         Rd_norm = max(Rd_norm, LinearAlgebra.norm(solver.Rd_lin, Inf))
-        cnorm = max(cnorm, LinearAlgebra.norm(_inner(solver.model).d_lin, Inf))
     end
-    solver.inf_du = max(Rd_norm / max(T(1), cnorm), additional_infeasibility(solver.schur))
+    solver.inf_du = max(Rd_norm, additional_infeasibility(solver.schur))
     return
 end
 
@@ -421,7 +423,7 @@ function MadSDPSolver(model::LRO.Model; schur = nothing, options...)
     if schur isa AugmentedKKT && LRO.num_second_order_cones(model) > 0
         return MadSDPSolver(LRO.dual_model(model); schur, options...)
     end
-    if schur isa Union{AugmentedKKT,RootKKT}
+    if schur isa Union{AugmentedKKT,RootKKT,SparseKKT}
         data = model.data
         C, d, _, _ = scalar_block_bounds(model)
         dual =

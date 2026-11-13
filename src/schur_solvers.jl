@@ -3,6 +3,7 @@
 check_schur(::AbstractSchurSolver, ::AbstractAlgorithm) = nothing
 
 needs_schur_buffer(::AbstractSchurSolver) = true
+needs_jacobian_buffers(::AbstractSchurSolver) = true
 
 mutable struct DenseCholeskyWorkspace{T}
     H::Matrix{T}

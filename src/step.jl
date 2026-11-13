@@ -128,7 +128,7 @@ end
 # stored in `delX`, `delS`, `delx` and `delz`.
 function correction!(solver)
     for b in solver.blocks
-        correction!(b.work.corr, b.work.dir, b)
+        correction!(b.work.corr, b.work.dir, b, needs_normal_equations(solver.schur))
     end
     @inbounds for k = 1:(solver.n_scalar)
         solver.corr_lin[k] = -solver.delx[k] * solver.delz[k] * solver.zinv[k]
@@ -180,8 +180,18 @@ prepare_step!(::EigenStep, b::SDPBlock) = _cholesky_factor!(b.work.Lx, b.X)
 
 # Fraction `τ` of the largest step keeping `L L' + α Δ` positive definite.
 function _eigen_step(workspace::_EigenStepWorkspace{T}, L, Δ, τ) where {T}
-    A = _CongruenceInverse(L, Δ, workspace.tmp)
-    λ = LRO.lanczos_eigmin!(workspace.eigen, A)
+    λ = if size(L, 1) <= 8
+        matrix = workspace.eigen.scratch
+        copyto!(matrix, Δ)
+        factor = LinearAlgebra.LowerTriangular(L)
+        LinearAlgebra.ldiv!(factor, matrix)
+        LinearAlgebra.rdiv!(matrix, factor')
+        _symmetrize!(matrix)
+        LRO.eigmin!(workspace.eigen, matrix)
+    else
+        A = _CongruenceInverse(L, Δ, workspace.tmp)
+        LRO.lanczos_eigmin!(workspace.eigen, A)
+    end
     return λ > -sqrt(eps(T)) ? one(T) : min(one(T), -T(τ) / λ)
 end
 
