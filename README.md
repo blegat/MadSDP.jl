@@ -5,7 +5,7 @@
 
 [MadSDP.jl](https://github.com/blegat/MadSDP.jl) is a semidefinite programming solver written in Julia. It solves semidefinite programs, including problems with both positive semidefinite matrix variables and nonnegative scalar variables, using interior-point methods.
 
-MadSDP is a **malleable solver**, thanks to [MadNLP](https://github.com/MadNLP/MadNLP.jl): it uses MadNLP's linear solver interface and infrastructure, and exposes interchangeable algorithmic components. You can choose the interior-point algorithm, search direction, step-length rule, centering strategy, initial point, and Schur complement solver, or implement new components in Julia.
+MadSDP is a **malleable solver**, thanks to [MadNLP](https://github.com/MadNLP/MadNLP.jl): in addition to the classical [options](#options), you can choose or implement [algorithmic components](#algorithmic-components), including the interior-point algorithm, search direction, step-length rule, centering strategy, initial point, and Schur complement solver, and provide [custom matrices and model callbacks](#custom-matrices-and-model-callbacks) to exploit the structure of your problem.
 
 MadSDP provides an interface to [MathOptInterface](https://github.com/jump-dev/MathOptInterface.jl) through [LowRankOpt](https://github.com/blegat/LowRankOpt.jl), so it can be used with [JuMP](https://jump.dev).
 
