@@ -38,8 +38,17 @@ end
 
 # Solves the Schur system targeting `μ S⁻¹` and computes the directions.
 function _solve_directions!(solver::MadSDPSolver{T}, μ::T, corrected::Bool) where {T}
+    return solve_directions!(solver.schur, solver, μ, corrected)
+end
+
+function solve_directions!(
+    workspace,
+    solver::MadSDPSolver{T},
+    μ::T,
+    corrected::Bool,
+) where {T}
     rhs!(solver.dely, solver, μ, corrected)
-    schur_solve!(solver.schur, solver.dely)
+    schur_solve!(workspace, solver.dely)
     directions!(solver, solver.dely, μ, corrected)
     return
 end

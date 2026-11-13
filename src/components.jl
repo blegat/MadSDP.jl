@@ -254,8 +254,14 @@ end
     AbstractSchurSolver
 
 Factorization of the Schur complement. A subtype `S` implements
-`schur_workspace(S, T, m)`, `factorize!(workspace) -> Bool` and
-`solve!(workspace, rhs)`, the matrix being `workspace.H`.
+`schur_workspace(S, T, m)`. By default, the driver assembles the normal
+matrix in `workspace.H`, calls `factorize!(workspace) -> Bool`, and solves
+with `schur_solve!(workspace, rhs)`.
+
+A component that avoids the normal matrix can instead implement
+`factorize_schur!(workspace, solver) -> Bool` and
+`solve_directions!(workspace, solver, μ, corrected)`, as [`QRSchur`](@ref)
+does for NT-scaled orthogonal projections.
 """
 abstract type AbstractSchurSolver end
 
@@ -275,3 +281,20 @@ struct MadNLPSchur <: AbstractSchurSolver
     linear_solver::Type
 end
 MadNLPSchur() = MadNLPSchur(MadNLP.LapackCPUSolver)
+
+"""
+    QRSchur()
+
+Sparse QR of the NT-scaled constraint matrix, without forming the normal
+matrix. Recover primal directions by orthogonal projection to avoid
+cancellation in `μ S⁻¹ - X + W A*(Δy) W`.
+
+Requires a `PrimalDual` algorithm with `NT()`, Float64 data, and linearly
+independent constraints. Unlike the dense Schur solvers, this component
+allocates while assembling and factoring the sparse matrix. It does not
+use `regularize_schur`. For example:
+```julia
+MadSDPSolver(model; schur = QRSchur(), step = CholeskyBacktrack())
+```
+"""
+struct QRSchur <: AbstractSchurSolver end

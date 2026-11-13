@@ -1,5 +1,7 @@
 # Factorizations of the Schur complement, see `AbstractSchurSolver`.
 
+check_schur(::AbstractSchurSolver, ::AbstractAlgorithm) = nothing
+
 mutable struct DenseCholeskyWorkspace{T}
     H::Matrix{T}
     F::LinearAlgebra.Cholesky{T,Matrix{T}}

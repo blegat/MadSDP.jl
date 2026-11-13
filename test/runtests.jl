@@ -254,3 +254,5 @@ end
 @testset "MOI_wrapper" begin
     include("MOI_wrapper.jl")
 end
+
+include("qr_schur.jl")
