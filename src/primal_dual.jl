@@ -126,9 +126,10 @@ function update_termination!(solver::MadSDPSolver{T}, ::PrimalDual) where {T}
     solver.obj_val = pobj
     _update_infeasibilities!(solver)
     solver.inf_compl = abs(pobj - dobj) / max(T(1), abs(pobj) + abs(dobj))
-    converged =
-        max(solver.inf_pr, solver.inf_du, solver.inf_compl) <= solver.opt.tol ||
-        solver.mu < solver.opt.mu_min
+    converged = max(solver.inf_pr, solver.inf_du, solver.inf_compl) <= solver.opt.tol
     _update_status!(solver, converged)
+    if solver.status == MadNLP.REGULAR && solver.mu < solver.opt.mu_min
+        solver.status = MadNLP.SEARCH_DIRECTION_BECOMES_TOO_SMALL
+    end
     return
 end
