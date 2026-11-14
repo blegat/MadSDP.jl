@@ -28,6 +28,31 @@ function test_components()
     return
 end
 
+# The `"dense_condition"` option of `LowRankOpt.Optimizer` chooses the sparse
+# constraint matrices for which the Schur complement uses dense products.
+function test_dense_condition()
+    for dense in (false, true)
+        model = MOI.instantiate(MadSDP.Optimizer; with_bridge_type = Float64)
+        MOI.set(model, MOI.Silent(), true)
+        MOI.set(model, MOI.RawOptimizerAttribute("dense_condition"), c -> dense)
+        config = MOI.Test.Config(
+            atol = 1e-3,
+            rtol = 1e-3,
+            exclude = Any[
+                MOI.ConstraintBasisStatus,
+                MOI.VariableBasisStatus,
+                MOI.ObjectiveBound,
+            ],
+        )
+        MOI.Test.runtests(
+            model,
+            config;
+            include = ["test_conic_PositiveSemidefiniteConeTriangle"],
+        )
+    end
+    return
+end
+
 function test_runtests()
     model = MOI.instantiate(MadSDP.Optimizer; with_bridge_type = Float64)
     # `ZerosBridge` strips the dual of variable bounds; remove it so that

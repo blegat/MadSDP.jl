@@ -83,7 +83,8 @@ Common options are:
 | `mu_min` | `1e-14` | Minimum barrier parameter for `PrimalDual`; reaching it without convergence stops with a small-step status. |
 | `regularize_schur` | `1e-12` | Initial regularization for the normal-matrix Schur solvers; unused by `QRSchur`. |
 | `max_schur_reg` | `8` | Maximum number of regularization attempts. |
-| `datasparsity` | `8` | Constraint matrix nonzero threshold for switching to dense products. |
+
+The sparse constraint matrices for which the Schur complement uses dense products are chosen by the `"dense_condition"` option of `LowRankOpt.Optimizer`, see the docstring of `LowRankOpt.default_dense_condition`.
 
 For `PrimalDual`, success requires primal feasibility, dual feasibility, and the relative objective gap to satisfy `tol`. If the barrier parameter drops below `mu_min` before these criteria are met, the solver returns `MadNLP.SEARCH_DIRECTION_BECOMES_TOO_SMALL` rather than reporting success.
 
