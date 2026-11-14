@@ -97,7 +97,7 @@ end
     C = Matrix{Float64}([3.0 0.0; 0.0 2.0])
     A1 = Matrix{Float64}([1.0 0.0; 0.0 1.0])
     model = build_sdp(C, [A1], [1.0])
-    buffered = LRO.BufferedModelForSchur(model, 1e-12)
+    buffered = LRO.BufferedModelForSchur(model)
 
     solver = MadSDPSolver(buffered; tol = 1e-8, max_iter = 60)
     solve!(solver; verbose = false)
