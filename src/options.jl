@@ -9,7 +9,4 @@
     mu_min::T = T(1e-14)
     regularize_schur::T = T(1e-12)
     max_schur_reg::Int = 8
-    # Threshold `κ` on the number of nonzeros of the sparse constraint
-    # matrices above which `LRO.BufferedModelForSchur` uses dense products.
-    datasparsity::Int = 8
 end
