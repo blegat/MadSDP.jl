@@ -257,3 +257,5 @@ end
 end
 
 include("qr_schur.jl")
+
+include("faces.jl")

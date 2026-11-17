@@ -164,3 +164,15 @@ Its native constraint types are:
 Here, `MOI` is an alias for `MathOptInterface`. JuMP and MathOptInterface bridges reformulate scalar affine constraints, equalities, and PSD variables into these forms.
 
 The optimizer supports `MOI.Silent()` and `MOI.RawOptimizerAttribute` for setting options. It does not currently provide infeasibility or unboundedness certificates.
+
+## Experimental adaptive faces
+
+`adaptive_face(model; face = FaceOptions(), tol = 1e-14)` tries conservative
+PSD face restarts for a single Float64 matrix block. It verifies lifted
+solutions against the original problem and rolls back failed trials. Optional
+`rotate = true` enables local full-space rank-one KKT refinement; this changes
+the support and is separate from the convex restricted SDP.
+
+See the [experiment report](experiments/face_report.md) for reproducible commands,
+accuracy limits, baseline comparisons, and the distinction between face
+restriction and final rounding. This is a small dense research prototype.

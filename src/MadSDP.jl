@@ -24,5 +24,8 @@ include("primal_dual.jl")
 include("qr_schur.jl")
 include("dual_centering.jl")
 include("moi.jl")
+include("faces.jl")
+
+export FaceOptions, adaptive_face
 
 end # module
