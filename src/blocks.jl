@@ -34,16 +34,14 @@ function SDPBlock{T}(algorithm::AbstractAlgorithm, n::Integer) where {T}
     )
 end
 
-# Workspace of `PrimalDual` for one block:
-#   delX, delS   search directions
+# Workspace of `PrimalDual` for one block, the search directions being in
+# `solver.d`:
 #   Lx           Cholesky factor of X, only computed if the step length
 #                strategy needs it
 #   corr         second-order correction added to ΔX
 #   dir          workspace of the search direction
 #   step         workspace of the step length strategy
 struct PrimalDualBlock{T,DW,SW}
-    delX::Matrix{T}
-    delS::Matrix{T}
     Lx::Matrix{T}
     corr::Matrix{T}
     dir::DW
@@ -53,8 +51,6 @@ end
 function block_workspace(a::PrimalDual, ::Type{T}, n) where {T}
     mat() = zeros(T, n, n)
     return PrimalDualBlock(
-        mat(),
-        mat(),
         mat(),
         mat(),
         direction_workspace(a.direction, T, n),

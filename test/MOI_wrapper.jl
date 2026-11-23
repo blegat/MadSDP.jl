@@ -3,6 +3,7 @@ module TestMOI
 using Test
 import MathOptInterface as MOI
 import MadSDP
+import MadNLP
 
 # The components are chosen with raw attributes, e.g., from JuMP with
 # `set_attribute(model, "direction", MadSDP.HKM())`.
@@ -11,6 +12,28 @@ function test_components()
     MOI.set(model, MOI.Silent(), true)
     MOI.set(model, MOI.RawOptimizerAttribute("direction"), MadSDP.HKM())
     MOI.set(model, MOI.RawOptimizerAttribute("step"), MadSDP.CholeskyBacktrack())
+    config = MOI.Test.Config(
+        atol = 1e-3,
+        rtol = 1e-3,
+        exclude = Any[
+            MOI.ConstraintBasisStatus,
+            MOI.VariableBasisStatus,
+            MOI.ObjectiveBound,
+        ],
+    )
+    MOI.Test.runtests(
+        model,
+        config;
+        include = ["test_conic_PositiveSemidefiniteConeTriangle"],
+    )
+    return
+end
+
+# The linear solver of the KKT system is also a raw attribute.
+function test_linear_solver()
+    model = MOI.instantiate(MadSDP.Optimizer; with_bridge_type = Float64)
+    MOI.set(model, MOI.Silent(), true)
+    MOI.set(model, MOI.RawOptimizerAttribute("linear_solver"), MadNLP.CHOLMODSolver)
     config = MOI.Test.Config(
         atol = 1e-3,
         rtol = 1e-3,

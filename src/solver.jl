@@ -4,26 +4,27 @@
 # `PrimalVector`. The algorithm is assembled from the components of
 # `components.jl`; this file contains what all algorithms share.
 
-mutable struct MadSDPSolver{T,M,B<:SDPBlock{T},A<:AbstractAlgorithm,AS,I,SW}
+mutable struct MadSDPSolver{T,M,B<:SDPBlock{T},A<:AbstractAlgorithm,AS,I,KKT}
     model::M                            # LRO.BufferedModelForSchur
     algorithm::A
     state::AS                           # see `algorithm_state`
     initial_point::I
-    schur::SW                           # workspace of the Schur solver
+    kkt::KKT                            # see `SchurKKTSystem`
     blocks::Vector{B}
     y::Vector{T}
-    dely::Vector{T}
     Rp::Vector{T}
+    # Search direction (ΔX, Δx, Δy, ΔS, Δz), right-hand side of the KKT
+    # system and buffer of the iterative refinement, see `solve_system!`.
+    d::SDPKKTVector{T}
+    p::SDPKKTVector{T}
+    _w::SDPKKTVector{T}
     # Scalar (LP) block — possibly empty (n_scalar == 0).
     n_scalar::Int
     x::Vector{T}                        # primal scalar variables x ≥ 0
     z::Vector{T}                        # dual scalar variables z ≥ 0
-    delx::Vector{T}
-    delz::Vector{T}
     Rd_lin::Vector{T}                   # scalar dual residual d_lin - z - C_lin' y
     zinv::Vector{T}                     # 1 ./ z
     corr_lin::Vector{T}                 # Mehrotra second-order correction
-    work_scalar::Vector{T}              # scratch buffer of length n_scalar
     work_m::Vector{T}                   # scratch buffer of length m
     rd_nonzero::Vector{Bool}            # whether `Rd` is above roundoff
     cnorm::Vector{T}                    # ‖C_i‖_∞
@@ -60,7 +61,9 @@ _inner(m::LRO.Model) = m
         step::AbstractStepLength = EigenStep(),
         centering::AbstractCentering = Mehrotra(),
         initial_point::AbstractInitialPoint = default_initial_point(algorithm),
-        schur::AbstractSchurSolver = DenseCholesky(),
+        linear_solver::Type = MadNLP.LapackCPUSolver,
+        opt_linear_solver = default_kkt_options(linear_solver),
+        schur::Union{Nothing,AbstractSchurSolver} = nothing,
         options...,
     )
 
@@ -69,6 +72,14 @@ the given components. The keyword arguments `direction`, `step` and
 `centering` configure the default [`PrimalDual`](@ref) algorithm and are
 ignored if `algorithm` is given. The remaining keyword arguments are the
 fields of [`MadSDPOptions`](@ref).
+
+The Newton systems are solved by reduction to the Schur complement, see
+`MadSDP.SchurKKTSystem`, which is factorized by the
+`MadNLP.AbstractLinearSolver` `linear_solver` with the options
+`opt_linear_solver`, by default LAPACK's Cholesky factorization. For
+instance, `linear_solver = MadNLP.CHOLMODSolver` uses CHOLMOD.
+The keyword `schur` is an alternative to `linear_solver` and
+`opt_linear_solver`, see [`AbstractSchurSolver`](@ref).
 
 For instance, the algorithm of `mc_psd` [HRVW96] for the max-cut
 relaxation is
@@ -91,7 +102,9 @@ function MadSDPSolver(
     centering::AbstractCentering = Mehrotra(),
     algorithm::AbstractAlgorithm = PrimalDual(direction, step, centering),
     initial_point::AbstractInitialPoint = default_initial_point(algorithm),
-    schur::AbstractSchurSolver = DenseCholesky(),
+    linear_solver::Union{Nothing,Type} = nothing,
+    opt_linear_solver = nothing,
+    schur::Union{Nothing,AbstractSchurSolver} = nothing,
     options...,
 ) where {T}
     opt = MadSDPOptions{T}(; options...)
@@ -104,7 +117,16 @@ function MadSDPSolver(
         error("MadSDP: model has no variables.")
     end
     check_model(algorithm, model)
-    check_schur(schur, algorithm)
+    if !isnothing(schur)
+        if !isnothing(linear_solver) || !isnothing(opt_linear_solver)
+            throw(
+                ArgumentError(
+                    "`schur` cannot be combined with `linear_solver` or `opt_linear_solver`.",
+                ),
+            )
+        end
+        check_schur(schur, algorithm)
+    end
     B = typeof(SDPBlock{T}(algorithm, 1))
     blocks = B[
         SDPBlock{T}(algorithm, LRO.side_dimension(model, LRO.MatrixIndex(i))) for
@@ -118,24 +140,38 @@ function MadSDPSolver(
     R = LRO.ShapedSolution(zinv, [schur_scaling(algorithm, b)[2] for b in blocks])
     cnorm =
         T[LinearAlgebra.norm(LRO.grad(model, LRO.MatrixIndex(i)), Inf) for i = 1:nblocks]
+    kkt = if schur isa QRSchur
+        schur_workspace(schur, T, m)
+    else
+        LS, opt_LS = _linear_solver(schur, linear_solver, opt_linear_solver)
+        MadNLP.create_kkt_system(
+            SchurKKTSystem,
+            model,
+            blocks,
+            L,
+            R,
+            LS;
+            opt_linear_solver = opt_LS,
+        )
+    end
+    kkt_vector() = SDPKKTVector{T}([b.n for b in blocks], n_scalar, m)
     return MadSDPSolver(
         model,
         algorithm,
         algorithm_state(algorithm, T, m),
         initial_point,
-        schur_workspace(schur, T, m),
+        kkt,
         blocks,
         vec_m(),
         vec_m(),
-        vec_m(),
+        kkt_vector(),
+        kkt_vector(),
+        kkt_vector(),
         n_scalar,
         x,
         vec_s(),
         vec_s(),
-        vec_s(),
-        vec_s(),
         zinv,
-        vec_s(),
         vec_s(),
         vec_m(),
         trues(nblocks) |> Vector{Bool},
@@ -160,6 +196,25 @@ function MadSDPSolver(
 end
 
 check_model(::AbstractAlgorithm, _) = nothing
+
+check_schur(::AbstractSchurSolver, ::AbstractAlgorithm) = nothing
+
+# Linear solver and its options from the keywords of `MadSDPSolver`. The
+# options are copied as the KKT system modifies them.
+function _linear_solver(::Nothing, linear_solver, opt)
+    LS = something(linear_solver, MadNLP.LapackCPUSolver)
+    return LS, isnothing(opt) ? default_kkt_options(LS) : deepcopy(opt)
+end
+function _linear_solver(::DenseCholesky, _, _)
+    return MadNLP.LapackCPUSolver, default_kkt_options(MadNLP.LapackCPUSolver)
+end
+function _linear_solver(s::MadNLPSchur, _, _)
+    if isnothing(s.opt_linear_solver)
+        # Bunch-Kaufman, the historical default of `MadNLPSchur` for LAPACK.
+        return s.linear_solver, _lapack_options(s.linear_solver, MadNLP.BUNCHKAUFMAN)
+    end
+    return s.linear_solver, deepcopy(s.opt_linear_solver)
+end
 
 # Primal objective ⟨C, X⟩ summed over blocks + d_lin' x.
 function primal_objective(solver::MadSDPSolver{T}) where {T}
@@ -283,7 +338,11 @@ function initial_point!(solver::MadSDPSolver{T}, p::DualShift) where {T}
     )
 end
 
+_initialize_kkt!(::Any) = nothing
+_initialize_kkt!(kkt::SchurKKTSystem) = MadNLP.initialize!(kkt)
+
 function initialize!(solver::MadSDPSolver)
+    _initialize_kkt!(solver.kkt)
     initial_point!(solver, solver.initial_point)
     solver.iter = 0
     solver.status = MadNLP.REGULAR
@@ -292,22 +351,19 @@ function initialize!(solver::MadSDPSolver)
     return
 end
 
-function _factorize_schur!(solver::MadSDPSolver)
-    return factorize_schur!(solver.schur, solver)
-end
+factorize_system!(solver::MadSDPSolver) = factorize_system!(solver.kkt, solver)
 
-function factorize_schur!(workspace, solver::MadSDPSolver{T}) where {T}
+# Assembles and factorizes the KKT system, increasing the regularization
+# from `opt.regularize_schur` until the factorization succeeds, at most
+# `opt.max_schur_reg` times, as `MadIPM.factorize_regularized_system!`.
+function factorize_system!(kkt::SchurKKTSystem{T}, solver::MadSDPSolver{T}) where {T}
     opt = solver.opt
-    H = workspace.H
     reg = opt.regularize_schur
     for _ = 1:(opt.max_schur_reg)
-        LRO.schur_complement!(solver.model, solver.L, solver.R, H)
-        if reg > zero(T)
-            @inbounds for i in axes(H, 1)
-                H[i, i] += reg
-            end
-        end
-        factorize!(workspace) && return true
+        MadNLP.regularize_diagonal!(kkt, reg - kkt.reg[], zero(T))
+        MadNLP.build_kkt!(kkt)
+        MadNLP.factorize_kkt!(kkt)
+        is_factorized(kkt) && return true
         reg = iszero(reg) ? T(1e-12) : 10 * reg
     end
     return false

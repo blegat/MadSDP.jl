@@ -13,11 +13,11 @@ export NT, HKM, EigenStep, CholeskyBacktrack, Mehrotra, AdaptiveMu
 export ScaledIdentity, InitialPoint, DualShift, DenseCholesky, MadNLPSchur, QRSchur
 
 include("options.jl")
-include("kkt.jl")
+include("kkt_vector.jl")
 include("components.jl")
 include("blocks.jl")
 include("directions.jl")
-include("schur_solvers.jl")
+include("kkt.jl")
 include("step.jl")
 include("solver.jl")
 include("primal_dual.jl")

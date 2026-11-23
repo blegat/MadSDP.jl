@@ -83,6 +83,8 @@ Common options are:
 | `mu_min` | `1e-14` | Minimum barrier parameter for `PrimalDual`; reaching it without convergence stops with a small-step status. |
 | `regularize_schur` | `1e-12` | Initial regularization for the normal-matrix Schur solvers; unused by `QRSchur`. |
 | `max_schur_reg` | `8` | Maximum number of regularization attempts. |
+| `refine_max_iter` | `0` | Maximum number of iterative refinement steps on each Newton system; unused by `QRSchur`. |
+| `refine_tol` | `100 * eps()` | Iterative refinement stops once the residual is below `refine_tol * max(1, ‖rhs‖∞)`. |
 | `datasparsity` | `8` | Constraint matrix nonzero threshold for switching to dense products. |
 
 For `PrimalDual`, success requires primal feasibility, dual feasibility, and the relative objective gap to satisfy `tol`. If the barrier parameter drops below `mu_min` before these criteria are met, the solver returns `MadNLP.SEARCH_DIRECTION_BECOMES_TOO_SMALL` rather than reporting success.
@@ -91,12 +93,13 @@ See [src/options.jl](src/options.jl) for all numerical options.
 
 ## Algorithmic components
 
-Algorithmic components can also be selected using `set_attribute`. For example, to use the Helmberg–Kojima–Monteiro direction, Cholesky backtracking, and MadNLP's linear solver interface:
+Algorithmic components can also be selected using `set_attribute`. For example, to use the Helmberg–Kojima–Monteiro direction, Cholesky backtracking, and CHOLMOD to factorize the Schur complement:
 
 ```julia
+import MadNLP
 set_attribute(model, "direction", MadSDP.HKM())
 set_attribute(model, "step", MadSDP.CholeskyBacktrack())
-set_attribute(model, "schur", MadSDP.MadNLPSchur())
+set_attribute(model, "linear_solver", MadNLP.CHOLMODSolver)
 optimize!(model)
 ```
 
@@ -109,7 +112,9 @@ The available components are:
 | `step` | `MadSDP.EigenStep()` | `MadSDP.CholeskyBacktrack()` |
 | `centering` | `MadSDP.Mehrotra()` | `MadSDP.AdaptiveMu()` |
 | `initial_point` | `MadSDP.ScaledIdentity()` for `PrimalDual` | `MadSDP.ScaledIdentity(scale)`, `MadSDP.DualShift()`, `MadSDP.InitialPoint(X, y; x)` |
-| `schur` | `MadSDP.DenseCholesky()` | `MadSDP.MadNLPSchur(linear_solver)`, `MadSDP.QRSchur()` |
+| `linear_solver` | `MadNLP.LapackCPUSolver` | any `MadNLP.AbstractLinearSolver` type, dense or sparse, e.g. `MadNLP.CHOLMODSolver` |
+| `opt_linear_solver` | LAPACK Cholesky | options of `linear_solver`, e.g. `MadNLP.LapackOptions(lapack_algorithm = MadNLP.BUNCHKAUFMAN)` |
+| `schur` | `nothing` | `MadSDP.QRSchur()`, or the shorthands `MadSDP.DenseCholesky()`, `MadSDP.MadNLPSchur(linear_solver)` |
 
 The `direction`, `step`, and `centering` options configure the default `PrimalDual` algorithm. If you set `algorithm` explicitly, configure these components in `MadSDP.PrimalDual(; direction, step, centering)` instead.
 
@@ -117,7 +122,7 @@ The `direction`, `step`, and `centering` options configure the default `PrimalDu
 
 `ScaledIdentity()` chooses an initial scale from the problem data. Use `ScaledIdentity(scale)` to choose it explicitly: PSD primal and dual slack blocks start at `scale * I`, nonnegative scalar variables and their dual slacks start at `scale`, and equality multipliers start at zero. The scale must be finite and strictly positive. This controls the starting point, not the scaling of the problem itself.
 
-`MadNLPSchur()` defaults to `MadNLP.LapackCPUSolver`. Pass a compatible `MadNLP.AbstractLinearSolver` type to select a different factorization backend.
+Each Newton system is reduced to the Schur complement on the equality multipliers, which is factorized by `linear_solver`. A sparse solver (`MadNLP.input_type(linear_solver) == :csc`) receives the lower triangle of the dense Schur complement. A factorization is accepted if the solver reports that the Schur complement is positive definite; otherwise the regularization is increased, see `regularize_schur`. Solvers that do not compute the inertia (`MadNLP.is_inertia`), such as LAPACK's LU, cannot detect a failed factorization. `DenseCholesky()` is the default and `MadNLPSchur(linear_solver)` is the same as setting `linear_solver`, except that it defaults to LAPACK's Bunch–Kaufman factorization.
 
 `QRSchur()` factors the NT-scaled constraint matrix with sparse QR instead of forming its normal matrix. It recovers primal search directions by orthogonal projection to avoid cancellation in the normal-equation recovery formula. It requires `PrimalDual` with the `NT()` direction, `Float64` data, and linearly independent constraints. It allocates during sparse matrix assembly and factorization and does not use `regularize_schur` or `max_schur_reg`. Compare its runtime and numerical behavior with the normal-matrix solvers on your problem.
 

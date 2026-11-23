@@ -102,9 +102,9 @@ end
 function _newton_direction!(solver::MadSDPSolver{T}) where {T}
     st = solver.state
     _compute_gradient!(solver)
-    _factorize_schur!(solver) || return false
+    factorize_system!(solver) || return false
     copyto!(st.d, st.g)
-    schur_solve!(solver.schur, st.d)
+    solve_schur!(solver.kkt, st.d)
     st.λ = sqrt(max(LinearAlgebra.dot(st.g, st.d), zero(T)))
     return true
 end
@@ -123,7 +123,7 @@ function initialize_algorithm!(solver::MadSDPSolver{T}, a::DualCentering) where 
     # Now `d = B ∇ζ` since `t = 0`; `Δy = B b`.
     bvec = LRO.cons_constant(solver.model)
     copyto!(st.Δy, bvec)
-    schur_solve!(solver.schur, st.Δy)
+    solve_schur!(solver.kkt, st.Δy)
     bBb = max(LinearAlgebra.dot(bvec, st.Δy), eps(T))
     bBg = LinearAlgebra.dot(bvec, st.d)
     st.t = max(bBg / bBb, T(a.β) / sqrt(bBb))
@@ -236,7 +236,7 @@ function _predictor_step!(solver::MadSDPSolver{T}) where {T}
     @. st.yhat = solver.y + st.d
     # Δy = t · B · b, with the Schur complement factorized at `y_k`.
     copyto!(st.Δy, LRO.cons_constant(model))
-    schur_solve!(solver.schur, st.Δy)
+    solve_schur!(solver.kkt, st.Δy)
     st.Δy .*= st.t
     for (i, b) in enumerate(solver.blocks)
         _slack!(b.work.Shat, model, st.yhat, i)
