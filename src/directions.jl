@@ -87,9 +87,9 @@ end
 # `RNT[p, q] = -(G⁻¹ ΔX ΔS G + Gᵀ ΔS ΔX G⁻ᵀ)[p, q] / (Σ[p] + Σ[q])` and
 # `corr = G RNT Gᵀ`. As `ΔX` and `ΔS` are symmetric, the second term is the
 # transpose of the first one.
-function correction!(corr, ws::NTWorkspace, b::SDPBlock)
-    LinearAlgebra.mul!(ws.tmp, ws.Gi, b.work.delX)
-    LinearAlgebra.mul!(ws.RNT, ws.tmp, b.work.delS)
+function correction!(corr, ws::NTWorkspace, ::SDPBlock, ΔX, ΔS)
+    LinearAlgebra.mul!(ws.tmp, ws.Gi, ΔX)
+    LinearAlgebra.mul!(ws.RNT, ws.tmp, ΔS)
     LinearAlgebra.mul!(ws.M, ws.RNT, ws.G)
     @inbounds for q in axes(ws.RNT, 2), p in axes(ws.RNT, 1)
         ws.RNT[p, q] = -(ws.M[p, q] + ws.M[q, p]) / (ws.D[p] + ws.D[q])
@@ -120,8 +120,8 @@ function apply_E!(out, ws::HKMWorkspace, b::SDPBlock, M)
 end
 
 # `corr = -(ΔX ΔS S⁻¹ + S⁻¹ ΔS ΔX) / 2`
-function correction!(corr, ws::HKMWorkspace, b::SDPBlock)
-    LinearAlgebra.mul!(ws.tmp, b.work.delX, b.work.delS)
+function correction!(corr, ws::HKMWorkspace, b::SDPBlock, ΔX, ΔS)
+    LinearAlgebra.mul!(ws.tmp, ΔX, ΔS)
     LinearAlgebra.mul!(corr, ws.tmp, b.Si, -1, false)
     return _symmetrize!(corr)
 end

@@ -36,35 +36,35 @@ function _prepare!(solver::MadSDPSolver{T}, a::PrimalDual) where {T}
     return true
 end
 
-# Solves the Schur system targeting `μ S⁻¹` and computes the directions.
+# Computes the directions `solver.d` targeting `X S = μ I`.
 function _solve_directions!(solver::MadSDPSolver{T}, μ::T, corrected::Bool) where {T}
-    return solve_directions!(solver.schur, solver, μ, corrected)
+    return solve_directions!(solver.kkt, solver, μ, corrected)
 end
 
 function solve_directions!(
-    workspace,
+    ::SchurKKTSystem,
     solver::MadSDPSolver{T},
     μ::T,
     corrected::Bool,
 ) where {T}
-    rhs!(solver.dely, solver, μ, corrected)
-    schur_solve!(workspace, solver.dely)
-    directions!(solver, solver.dely, μ, corrected)
+    set_rhs!(solver.p, solver, μ, corrected)
+    solve_system!(solver.d, solver, solver.p)
     return
 end
 
 function _take_step!(solver::MadSDPSolver{T}, α::T, β::T) where {T}
     solver.alpha, solver.beta = α, β
-    for b in solver.blocks
-        @. b.X += α * b.work.delX
+    d = solver.d
+    for (i, b) in enumerate(solver.blocks)
+        @. b.X += α * d.X[i]
         _symmetrize!(b.X)
-        @. b.S += β * b.work.delS
+        @. b.S += β * d.S[i]
         _symmetrize!(b.S)
     end
-    @. solver.y += β * solver.dely
+    @. solver.y += β * d.y
     if solver.n_scalar > 0
-        @. solver.x += α * solver.delx
-        @. solver.z += β * solver.delz
+        @. solver.x += α * d.x
+        @. solver.z += β * d.z
     end
     solver.iter += 1
     update_residuals!(solver)
@@ -72,7 +72,7 @@ function _take_step!(solver::MadSDPSolver{T}, α::T, β::T) where {T}
 end
 
 function _start_iteration!(solver, a::PrimalDual)
-    if !_prepare!(solver, a) || !_factorize_schur!(solver)
+    if !_prepare!(solver, a) || !factorize_system!(solver)
         solver.status = MadNLP.ERROR_IN_STEP_COMPUTATION
         return false
     end

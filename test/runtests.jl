@@ -8,6 +8,7 @@ using MadSDP
 
 include("blocks.jl")
 include("termination.jl")
+include("kkt_vector.jl")
 
 primal_obj(solver) = MadSDP.primal_objective(solver)
 
@@ -185,7 +186,17 @@ end
     # Dual feasible start of `mc_psd` for `min ⟨-L / 4, X⟩, diag(X) = 1`.
     initial_point =
         InitialPoint([Matrix(1.0I, 4, 4)], -(1 .+ vec(sum(abs, L / 4, dims = 1))))
-    @testset "$schur" for schur in (DenseCholesky(), MadNLPSchur())
+    lapack_cholesky = MadNLPSchur(
+        MadNLP.LapackCPUSolver;
+        opt_linear_solver = MadNLP.LapackOptions(lapack_algorithm = MadNLP.CHOLESKY),
+    )
+    @testset "$schur" for schur in (
+        DenseCholesky(),
+        MadNLPSchur(),
+        lapack_cholesky,
+        MadNLPSchur(MadNLP.CHOLMODSolver),
+        MadNLPSchur(MadNLP.LDLSolver),
+    )
         solver = MadSDPSolver(
             maxcut;
             direction = HKM(),
@@ -247,6 +258,8 @@ end
         end
     end
 end
+
+include("kkt.jl")
 
 @testset "DualCentering" begin
     include("dual_runtests.jl")

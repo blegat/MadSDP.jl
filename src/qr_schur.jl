@@ -21,7 +21,7 @@ function schur_workspace(::QRSchur, ::Type{T}, m) where {T}
     return QRSchurWorkspace{T}(Vector{Tuple{Int,Matrix{T}}}[], nothing, ones(T, m), T[])
 end
 
-function factorize_schur!(ws::QRSchurWorkspace{T}, solver::MadSDPSolver) where {T}
+function factorize_system!(ws::QRSchurWorkspace{T}, solver::MadSDPSolver) where {T}
     if isempty(ws.entries)
         model = _inner(solver.model)
         for idx in LRO.matrix_indices(model)
@@ -130,7 +130,8 @@ function solve_directions!(
     c = R' \ (ws.scale .* solver.Rp)[p]
     qbase[1:solver.m] .= c .- view(qbase, 1:solver.m)
     qbase[(solver.m+1):end] .= zero(T)
-    solver.dely[p] = ws.scale[p] .* (R \ qbase[1:solver.m])
+    d = solver.d
+    d.y[p] = ws.scale[p] .* (R \ qbase[1:solver.m])
     direction = copy(base)
     direction[F.prow] .+= F.Q * qbase
     offset = 0
@@ -143,18 +144,18 @@ function solve_directions!(
             b.buf2[row, col] = b.buf2[col, row] = v
         end
         LinearAlgebra.mul!(b.buf, G, b.buf2)
-        LinearAlgebra.mul!(b.work.delX, b.buf, G')
-        _symmetrize!(b.work.delX)
-        AT = LRO.unsafe_jtprod(solver.model, solver.dely, LRO.MatrixIndex(i))
-        copyto!(b.work.delS, b.Rd)
-        _axpy_sparse_dense!(b.work.delS, -one(T), AT)
-        _symmetrize!(b.work.delS)
+        LinearAlgebra.mul!(d.X[i], b.buf, G')
+        _symmetrize!(d.X[i])
+        AT = LRO.unsafe_jtprod(solver.model, d.y, LRO.MatrixIndex(i))
+        copyto!(d.S[i], b.Rd)
+        _axpy_sparse_dense!(d.S[i], -one(T), AT)
+        _symmetrize!(d.S[i])
         offset += b.n * (b.n + 1) ÷ 2
     end
-    LinearAlgebra.mul!(solver.delz, _inner(solver.model).C_lin', solver.dely)
-    solver.delz .= solver.Rd_lin .- solver.delz
+    LinearAlgebra.mul!(d.z, _inner(solver.model).C_lin', d.y)
+    d.z .= solver.Rd_lin .- d.z
     for k = 1:solver.n_scalar
-        solver.delx[k] = sqrt(solver.x[k] / solver.z[k]) * direction[offset+k]
+        d.x[k] = sqrt(solver.x[k] / solver.z[k]) * direction[offset+k]
     end
     return
 end

@@ -30,7 +30,7 @@ end
                 [4.0 -0.2 0.1; -0.2 2.0 0.3; 0.1 0.3 3.0]
             MadSDP.update_residuals!(s)
             @test MadSDP._prepare!(s, s.algorithm)
-            @test MadSDP._factorize_schur!(s)
+            @test MadSDP.factorize_system!(s)
         end
         for corrected in (false, true)
             μ = corrected ? 0.3 : 0.0
@@ -40,26 +40,27 @@ end
                 end
                 MadSDP._solve_directions!(s, μ, corrected)
                 b = only(s.blocks)
+                ΔX, ΔS = only(s.d.X), only(s.d.S)
                 lhs =
-                    [dot(LRO.jac(model, j, LRO.MatrixIndex(1)), b.work.delX) for j = 1:3] + model.C_lin * s.delx
+                    [dot(LRO.jac(model, j, LRO.MatrixIndex(1)), ΔX) for j = 1:3] + model.C_lin * s.d.x
                 @test lhs ≈ s.Rp atol = 1e-10
-                dual = sum(LRO.jac(model, j, LRO.MatrixIndex(1)) * s.dely[j] for j = 1:3)
-                @test b.work.delS + dual ≈ b.Rd atol = 1e-10
+                dual = sum(LRO.jac(model, j, LRO.MatrixIndex(1)) * s.d.y[j] for j = 1:3)
+                @test ΔS + dual ≈ b.Rd atol = 1e-10
                 W = b.work.dir.W
                 center = μ * inv(b.S) - b.X
                 if corrected
                     center += b.work.corr
                 end
-                @test b.work.delX + W * b.work.delS * W ≈ center atol = 1e-10
+                @test ΔX + W * ΔS * W ≈ center atol = 1e-10
             end
             a, b = solvers
-            @test a.dely ≈ b.dely atol = 1e-10
-            @test a.delx ≈ b.delx atol = 1e-10
-            @test a.delz ≈ b.delz atol = 1e-10
-            @test a.blocks[1].work.delX ≈ b.blocks[1].work.delX atol = 1e-10
+            @test a.d.y ≈ b.d.y atol = 1e-10
+            @test a.d.x ≈ b.d.x atol = 1e-10
+            @test a.d.z ≈ b.d.z atol = 1e-10
+            @test a.d.X[1] ≈ b.d.X[1] atol = 1e-10
         end
         if diagonal && scalars == 0
-            F = solvers[2].schur.factor
+            F = solvers[2].kkt.factor
             @test F.prow != collect(1:size(F.Q, 1))
         end
     end

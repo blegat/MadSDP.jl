@@ -56,81 +56,68 @@ function _apply_E!(out, ws, b, M)
     return apply_E!(out, ws, b, M)
 end
 
-# Right-hand side `h` of the Schur system `H Δy = h` targeting `μ S⁻¹`:
-#   h = R_p + Σ_i A_i(X − μ S⁻¹ + E(R_d) − corr)
-#           + C_lin (x − μ ./ z + (x ./ z) .* R_d_lin − corr_lin)
-# where the corrections are only included if `corrected`.
-function rhs!(h::Vector{T}, solver, μ::T, corrected::Bool) where {T}
-    model = solver.model
-    copyto!(h, solver.Rp)
+# Right-hand side `p` of the linearized KKT system (see `SchurKKTSystem`)
+# targeting `X S = μ I`:
+#   r_c = μ S⁻¹ - X + corr,        r_cl = μ ./ z - x + corr_lin
+#   r_p = R_p,   r_d = R_d,        r_dl = R_d_lin
+# where the corrections are only included if `corrected`. The dual residuals
+# at the roundoff level are not given to `E`, see `update_residuals!`.
+function set_rhs!(p::SDPKKTVector{T}, solver, μ::T, corrected::Bool) where {T}
+    copyto!(p.y, solver.Rp)
     for (i, b) in enumerate(solver.blocks)
-        @. b.buf = b.X - μ * b.Si
-        if solver.rd_nonzero[i]
-            _apply_E!(b.buf2, b.work.dir, b, b.Rd)
-            b.buf .+= b.buf2
-        end
+        @. p.X[i] = μ * b.Si - b.X
         if corrected
-            b.buf .-= b.work.corr
+            p.X[i] .+= b.work.corr
         end
-        LRO.add_jprod!(model, b.buf, h, LRO.MatrixIndex(i))
+        copyto!(p.S[i], b.Rd)
     end
-    if solver.n_scalar > 0
-        @inbounds for k = 1:(solver.n_scalar)
-            x, zinv = solver.x[k], solver.zinv[k]
-            v = x - μ * zinv + x * zinv * solver.Rd_lin[k]
-            if corrected
-                v -= solver.corr_lin[k]
-            end
-            solver.work_scalar[k] = v
+    @inbounds for k = 1:(solver.n_scalar)
+        p.x[k] = μ * solver.zinv[k] - solver.x[k]
+        if corrected
+            p.x[k] += solver.corr_lin[k]
         end
-        LinearAlgebra.mul!(h, _inner(model).C_lin, solver.work_scalar, true, true)
     end
-    return h
+    copyto!(p.z, solver.Rd_lin)
+    solver.kkt.rd_negligible .= .!solver.rd_nonzero
+    return p
 end
 
-# Directions from the solution `Δy` of the Schur system:
-#   ΔS = R_d − A*(Δy),   ΔX = μ S⁻¹ − X − E(R_d) + E(A*(Δy)) + corr
-#   Δz = R_d_lin − C_lin' Δy,   Δx = μ ./ z − x − (x ./ z) .* Δz + corr_lin
-function directions!(solver, dely::Vector{T}, μ::T, corrected::Bool) where {T}
-    model = solver.model
-    for (i, b) in enumerate(solver.blocks)
-        AT_dy = LRO.unsafe_jtprod(model, dely, LRO.MatrixIndex(i))
-        copyto!(b.work.delS, b.Rd)
-        _axpy_sparse_dense!(b.work.delS, -one(T), AT_dy)
-        _symmetrize!(b.work.delS)
-        _apply_E!(b.buf2, b.work.dir, b, AT_dy)
-        @. b.work.delX = μ * b.Si - b.X + b.buf2
-        if solver.rd_nonzero[i]
-            _apply_E!(b.buf2, b.work.dir, b, b.Rd)
-            b.work.delX .-= b.buf2
-        end
-        if corrected
-            b.work.delX .+= b.work.corr
-        end
-        _symmetrize!(b.work.delX)
+# Solves `K d = p` and improves the solution with at most
+# `opt.refine_max_iter` iterations of iterative refinement, until the
+# residual is below `opt.refine_tol * ‖p‖∞`, as `MadIPM.solve_system!`.
+function solve_system!(
+    d::SDPKKTVector{T},
+    solver,
+    p::SDPKKTVector{T},
+) where {T}
+    kkt = solver.kkt
+    copyto!(MadNLP.full(d), MadNLP.full(p))
+    MadNLP.solve_kkt!(kkt, d)
+    max_iter = solver.opt.refine_max_iter
+    max_iter > 0 || return d
+    # The residuals are not at the roundoff level of the dual residuals.
+    fill!(kkt.rd_negligible, false)
+    w = solver._w
+    tol = solver.opt.refine_tol * max(one(T), MadNLP.norm(p, Inf))
+    for _ = 1:max_iter
+        copyto!(MadNLP.full(w), MadNLP.full(p))
+        LinearAlgebra.mul!(w, kkt, d, -one(T), one(T))
+        MadNLP.norm(w, Inf) <= tol && break
+        MadNLP.solve_kkt!(kkt, w)
+        MadNLP.axpy!(one(T), w, d)
     end
-    if solver.n_scalar > 0
-        LinearAlgebra.mul!(solver.delz, _inner(model).C_lin', dely)
-        @inbounds for k = 1:(solver.n_scalar)
-            solver.delz[k] = solver.Rd_lin[k] - solver.delz[k]
-            x, zinv = solver.x[k], solver.zinv[k]
-            solver.delx[k] = μ * zinv - x - x * zinv * solver.delz[k]
-            if corrected
-                solver.delx[k] += solver.corr_lin[k]
-            end
-        end
-    end
-    return
+    return d
 end
 
 # Second-order corrections from the affine-scaling directions currently
-# stored in `delX`, `delS`, `delx` and `delz`.
+# stored in `solver.d`.
 function correction!(solver)
-    for b in solver.blocks
-        correction!(b.work.corr, b.work.dir, b)
+    d = solver.d
+    for (i, b) in enumerate(solver.blocks)
+        correction!(b.work.corr, b.work.dir, b, d.X[i], d.S[i])
     end
     @inbounds for k = 1:(solver.n_scalar)
-        solver.corr_lin[k] = -solver.delx[k] * solver.delz[k] * solver.zinv[k]
+        solver.corr_lin[k] = -d.x[k] * d.z[k] * solver.zinv[k]
     end
     return
 end
@@ -186,13 +173,14 @@ end
 function step_lengths(s::EigenStep, solver)
     T = eltype(solver.y)
     α = β = one(T)
-    for b in solver.blocks
-        α = min(α, _eigen_step(b.work.step, b.work.Lx, b.work.delX, s.τ))
-        β = min(β, _eigen_step(b.work.step, b.Ls, b.work.delS, s.τ))
+    d = solver.d
+    for (i, b) in enumerate(solver.blocks)
+        α = min(α, _eigen_step(b.work.step, b.work.Lx, d.X[i], s.τ))
+        β = min(β, _eigen_step(b.work.step, b.Ls, d.S[i], s.τ))
     end
     if solver.n_scalar > 0
-        α = min(α, T(s.τ) * _max_scalar_step(solver.x, solver.delx))
-        β = min(β, T(s.τ) * _max_scalar_step(solver.z, solver.delz))
+        α = min(α, T(s.τ) * _max_scalar_step(solver.x, d.x))
+        β = min(β, T(s.τ) * _max_scalar_step(solver.z, d.z))
     end
     return α, β
 end
@@ -201,11 +189,12 @@ step_workspace(::CholeskyBacktrack, ::Type, _) = nothing
 
 prepare_step!(::CholeskyBacktrack, ::SDPBlock) = true
 
+# Backtracks on `X(i) + α ΔX(i)` for each block `i`.
 function _backtrack(s::CholeskyBacktrack, blocks, X, ΔX, x, dx)
     T = eltype(x)
     α = one(T)
-    for b in blocks
-        while !_is_add_mul_posdef(b.buf, X(b), α, ΔX(b))
+    for (i, b) in enumerate(blocks)
+        while !_is_add_mul_posdef(b.buf, X(i), α, ΔX(i))
             α *= T(s.shrink)
             if α < eps(T)
                 return zero(T)
@@ -222,22 +211,25 @@ function _backtrack(s::CholeskyBacktrack, blocks, X, ΔX, x, dx)
 end
 
 function step_lengths(s::CholeskyBacktrack, solver)
-    α = _backtrack(s, solver.blocks, b -> b.X, b -> b.work.delX, solver.x, solver.delx)
-    β = _backtrack(s, solver.blocks, b -> b.S, b -> b.work.delS, solver.z, solver.delz)
+    blocks, d = solver.blocks, solver.d
+    α = _backtrack(s, blocks, i -> blocks[i].X, i -> d.X[i], solver.x, d.x)
+    β = _backtrack(s, blocks, i -> blocks[i].S, i -> d.S[i], solver.z, d.z)
     return α, β
 end
 
 # Complementarity at the trial point `(X + α ΔX, S + β ΔS)`.
 function affine_complementarity(solver, α::T, β::T) where {T}
     s = zero(T)
-    for b in solver.blocks
+    d = solver.d
+    for (i, b) in enumerate(solver.blocks)
+        ΔX, ΔS = d.X[i], d.S[i]
         s += LinearAlgebra.dot(b.X, b.S)
-        s += β * LinearAlgebra.dot(b.X, b.work.delS)
-        s += α * LinearAlgebra.dot(b.work.delX, b.S)
-        s += α * β * LinearAlgebra.dot(b.work.delX, b.work.delS)
+        s += β * LinearAlgebra.dot(b.X, ΔS)
+        s += α * LinearAlgebra.dot(ΔX, b.S)
+        s += α * β * LinearAlgebra.dot(ΔX, ΔS)
     end
     @inbounds for k = 1:(solver.n_scalar)
-        s += (solver.x[k] + α * solver.delx[k]) * (solver.z[k] + β * solver.delz[k])
+        s += (solver.x[k] + α * d.x[k]) * (solver.z[k] + β * d.z[k])
     end
     return s / max(_barrier_dim(solver), 1)
 end

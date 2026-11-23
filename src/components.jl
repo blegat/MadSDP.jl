@@ -82,8 +82,8 @@ A subtype `D` implements
 * `prepare_direction!(workspace, block)` returning `false` on failure,
 * `schur_scaling(workspace, block)` returning `(L, R)`,
 * `apply_E!(out, workspace, block, M)`,
-* `correction!(corr, workspace, block)` from `block.delX` and
-  `block.delS`, which hold the affine-scaling direction.
+* `correction!(corr, workspace, block, ΔX, ΔS)` from the affine-scaling
+  direction `(ΔX, ΔS)` of the block.
 """
 abstract type AbstractDirection end
 
@@ -253,34 +253,51 @@ end
 """
     AbstractSchurSolver
 
-Factorization of the Schur complement. A subtype `S` implements
-`schur_workspace(S, T, m)`. By default, the driver assembles the normal
-matrix in `workspace.H`, calls `factorize!(workspace) -> Bool`, and solves
-with `schur_solve!(workspace, rhs)`.
-
-A component that avoids the normal matrix can instead implement
-`factorize_schur!(workspace, solver) -> Bool` and
-`solve_directions!(workspace, solver, μ, corrected)`, as [`QRSchur`](@ref)
-does for NT-scaled orthogonal projections.
+Value of the `schur` keyword of [`MadSDPSolver`](@ref), selecting how the
+KKT system is solved. [`DenseCholesky`](@ref) and [`MadNLPSchur`](@ref) are
+shorthands for the `linear_solver` and `opt_linear_solver` keywords of the
+`MadSDP.SchurKKTSystem`. [`QRSchur`](@ref) avoids the Schur complement: its
+workspace, created by `schur_workspace(S, T, m)`, implements
+`factorize_system!(workspace, solver) -> Bool` and
+`solve_directions!(workspace, solver, μ, corrected)`.
 """
 abstract type AbstractSchurSolver end
 
 """
     DenseCholesky()
 
-LAPACK Cholesky factorization of the dense Schur complement.
+LAPACK Cholesky factorization of the dense Schur complement, the default;
+same as `linear_solver = MadNLP.LapackCPUSolver`.
 """
 struct DenseCholesky <: AbstractSchurSolver end
 
 """
-    MadNLPSchur(linear_solver = MadNLP.LapackCPUSolver)
+    MadNLPSchur(linear_solver = MadNLP.LapackCPUSolver; opt_linear_solver = nothing)
 
-Factorization with a `MadNLP.AbstractLinearSolver`, e.g., to use a GPU.
+Factorization with a `MadNLP.AbstractLinearSolver`, either dense (e.g.,
+`MadNLP.LapackCPUSolver`) or sparse (e.g., `MadNLP.CHOLMODSolver`), which
+then receives the lower triangle of the dense Schur complement. Same as the
+keywords `linear_solver` and `opt_linear_solver` of [`MadSDPSolver`](@ref),
+except that the options default to the Bunch-Kaufman factorization for
+LAPACK instead of Cholesky. A factorization is successful if
+the solver reports that the Schur complement is positive definite, so the
+solver should compute the inertia (`MadNLP.is_inertia`) for the
+regularization of [`MadSDPOptions`](@ref) to be used. For example:
+```julia
+MadNLPSchur(MadNLP.LapackCPUSolver; opt_linear_solver =
+    MadNLP.LapackOptions(lapack_algorithm = MadNLP.CHOLESKY))
+```
 """
-struct MadNLPSchur <: AbstractSchurSolver
+struct MadNLPSchur{O} <: AbstractSchurSolver
     linear_solver::Type
+    opt_linear_solver::O
 end
-MadNLPSchur() = MadNLPSchur(MadNLP.LapackCPUSolver)
+function MadNLPSchur(
+    linear_solver::Type = MadNLP.LapackCPUSolver;
+    opt_linear_solver = nothing,
+)
+    return MadNLPSchur(linear_solver, opt_linear_solver)
+end
 
 """
     QRSchur()
